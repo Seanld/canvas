@@ -95,6 +95,34 @@ func BeveledRectangle(w, h, r float64) *Path {
 	return p
 }
 
+// An approximation of a circle using cubic bezier curves. This may be a good
+// option if arc circles in your output SVGs aren't rendered correctly in a certain program.
+func CubicCircle(r float64) *Path {
+	if Equal(r, 0.0) {
+		return &Path{}
+	}
+
+	// Values pulled from https://spencermortensen.com/articles/bezier-circle/
+	var (
+		a = 1.00005519 * r
+		b = 0.55342686 * r
+		c = 0.99873585 * r
+	)
+
+	p := &Path{}
+	// Start pen at top center.
+	p.MoveTo(0.0, a)
+
+	p.CubeTo(b, c, c, b, a, 0.0)
+	p.CubeTo(c, -b, b, -c, 0.0, -a)
+	p.CubeTo(-b, -c, -c, -b, -a, 0.0)
+	p.CubeTo(-c, b, -b, c, 0.0, a)
+
+	p.Close()
+
+	return p
+}
+
 // Circle returns a circle of radius r.
 func Circle(r float64) *Path {
 	return Ellipse(r, r)
