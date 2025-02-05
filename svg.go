@@ -815,7 +815,7 @@ func (svg *svgParser) toPath(tag string, attrs map[string]string) (x float64, y 
 	case "circle":
 		x = svg.parseDimension(attrs["cx"], svg.width)
 		y = svg.parseDimension(attrs["cy"], svg.height)
-		path = CubicCircle(
+		path = Circle(
 			svg.parseDimension(attrs["r"], svg.diagonal),
 		)
 	case "ellipse":
