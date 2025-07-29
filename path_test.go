@@ -10,12 +10,13 @@ import (
 	"testing"
 
 	"github.com/srwiley/scanx"
-	"github.com/tdewolff/test"
 	"golang.org/x/image/vector"
 	"gonum.org/v1/plot"
 	"gonum.org/v1/plot/plotter"
 	"gonum.org/v1/plot/vg"
 	"gonum.org/v1/plot/vg/draw"
+
+	"github.com/tdewolff/test"
 )
 
 func TestPathEmpty(t *testing.T) {
@@ -252,6 +253,10 @@ func TestPathCrossingsWindings(t *testing.T) {
 		{"L10 10L10 -10L-10 10L20 40L20 -40L-10 -10z", Point{0.0, 0.0}, 2, 0, true},
 		{"L10 10L10 -10L-10 10L20 40L20 -40L-10 -10z", Point{1.0, 0.0}, 2, -2, false},
 		{"L10 10L10 -10L-10 10L20 40L20 -40L-10 -10z", Point{-1.0, 0.0}, 4, 0, false},
+
+		// bugs
+		{"M0 35.43000000000029L0 385.82000000000016L11.819999999999709 397.6300000000001L185.03999999999996 397.6300000000001L188.97999999999956 393.7000000000003L196.85000000000036 385.8299999999999L196.85000000000036 19.68000000000029", Point{89.4930000000003, 19.68000000000019}, 0, 0, false}, // #346
+		{"M0 35.43000000000029L0 385.82000000000016L11.819999999999709 397.6300000000001L185.03999999999996 397.6300000000001L188.97999999999956 393.7000000000003L196.85000000000036 385.8299999999999L196.85000000000036 19.68000000000029", Point{89.4930000000003, 20}, 1, -1, false},               // #346
 	}
 	for _, tt := range tts {
 		t.Run(fmt.Sprint(tt.p, " at ", tt.pos), func(t *testing.T) {
@@ -950,7 +955,7 @@ func TestPathLengthParametrization(t *testing.T) {
 }
 
 func BenchmarkToRasterizer(b *testing.B) {
-	res := DPMM(0.5)
+	res := DPMM(10.0)
 	data, err := os.ReadFile("resources/netherlands.path")
 	if err != nil {
 		panic(err)
@@ -969,7 +974,7 @@ func BenchmarkToRasterizer(b *testing.B) {
 	ras.Reset(int(w), int(h))
 
 	src := image.NewUniform(image.Black)
-	p.ToRasterizer(ras, res)
+	p.ToVectorRasterizer(ras, res)
 	ras.Draw(img, rect, src, image.Point{0, 0})
 
 	f, _ := os.Create("ToRasterizer.png")
@@ -979,13 +984,13 @@ func BenchmarkToRasterizer(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ras.Reset(int(w), int(h))
-		p.ToRasterizer(ras, res)
+		p.ToVectorRasterizer(ras, res)
 		ras.Draw(img, rect, src, image.Point{0, 0})
 	}
 }
 
 func BenchmarkToScanx(b *testing.B) {
-	res := DPMM(0.5)
+	res := DPMM(10.0)
 	data, err := os.ReadFile("resources/netherlands.path")
 	if err != nil {
 		panic(err)
@@ -1003,7 +1008,7 @@ func BenchmarkToScanx(b *testing.B) {
 	scanner := scanx.NewScanner(spanner, int(w), int(h))
 
 	scanner.SetColor(image.Black)
-	p.ToScanx(scanner, h, res)
+	p.ToScanxScanner(scanner, h, res)
 	scanner.Draw()
 
 	f, _ := os.Create("ToScanx.png")
@@ -1013,7 +1018,7 @@ func BenchmarkToScanx(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		scanner.Clear()
-		p.ToScanx(scanner, h, res)
+		p.ToScanxScanner(scanner, h, res)
 		scanner.Draw()
 	}
 }

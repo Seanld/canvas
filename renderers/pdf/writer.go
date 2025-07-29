@@ -15,10 +15,11 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/Seanld/canvas"
-	canvasText "github.com/Seanld/canvas/text"
-	canvasFont "github.com/tdewolff/font"
 	"golang.org/x/text/encoding/charmap"
+
+	"github.com/Canvas/canvas"
+	canvasText "github.com/Canvas/canvas/text"
+	canvasFont "github.com/tdewolff/font"
 )
 
 // TODO: Invalid graphics transparency, Group has a transparency S entry or the S entry is null
@@ -45,6 +46,7 @@ type pdfWriter struct {
 	keywords   string
 	author     string
 	creator    string
+	lang       string
 }
 
 func newPDFWriter(writer io.Writer) *pdfWriter {
@@ -97,6 +99,11 @@ func (w *pdfWriter) SetAuthor(author string) {
 // SetCreator sets the document's creator.
 func (w *pdfWriter) SetCreator(creator string) {
 	w.creator = creator
+}
+
+// SetLang sets the document's language.
+func (w *pdfWriter) SetLang(lang string) {
+	w.lang = lang
 }
 
 func (w *pdfWriter) writeBytes(b []byte) {
@@ -249,10 +256,11 @@ func (w *pdfWriter) writeVal(i interface{}) {
 }
 
 func (w *pdfWriter) writeObject(val interface{}) pdfRef {
+	// newlines before and after obj and endobj are required by PDF/A
 	w.objOffsets = append(w.objOffsets, w.pos)
-	w.write("%v 0 obj", len(w.objOffsets))
+	w.write("%v 0 obj\n", len(w.objOffsets))
 	w.writeVal(val)
-	w.write("endobj\n")
+	w.write("\nendobj\n")
 	return pdfRef(len(w.objOffsets))
 }
 
@@ -343,11 +351,12 @@ func (w *pdfWriter) writeFont(ref pdfRef, font *canvas.Font, vertical bool) {
 		if sfnt.IsCFF && sfnt.CFF != nil {
 			sfnt.CFF.SetGlyphNames(nil)
 		}
+
 		sfntSubset, err := sfnt.Subset(glyphIDs, canvasFont.SubsetOptions{Tables: canvasFont.KeepPDFTables})
 		if err == nil {
 			sfnt = sfntSubset
 		} else {
-			fmt.Println("WARNING: font subsetting failed:", err)
+			panic("font subsetting failed: " + err.Error())
 		}
 	}
 	fontProgram := sfnt.Write()
@@ -552,9 +561,9 @@ end`)
 	}
 
 	w.objOffsets[ref-1] = w.pos
-	w.write("%v 0 obj", ref)
+	w.write("%v 0 obj\n", ref)
 	w.writeVal(dict)
-	w.write("endobj\n")
+	w.write("\nendobj\n")
 }
 
 func (w *pdfWriter) writeFonts(fontMap map[*canvas.Font]pdfRef, vertical bool) {
@@ -590,16 +599,13 @@ func (w *pdfWriter) Close() error {
 	w.writeFonts(w.fontsV, false)
 
 	// document catalog
-	w.objOffsets[0] = w.pos
-	w.write("%v 0 obj", 1)
-	w.writeVal(pdfDict{
+	catalog := pdfDict{
 		"Type":  pdfName("Catalog"),
 		"Pages": pdfRef(3),
 		// TODO: add metadata?
-	})
-	w.write("endobj\n")
+	}
 
-	// metadata
+	// document info
 	info := pdfDict{
 		"Producer":     "tdewolff/canvas",
 		"CreationDate": time.Now().Format("D:20060102150405Z0700"),
@@ -643,21 +649,31 @@ func (w *pdfWriter) Close() error {
 	if w.creator != "" {
 		info["Creator"] = encode(w.creator)
 	}
+	if w.lang != "" {
+		catalog["Lang"] = encode(w.creator)
+	}
 
+	// document catalog
+	w.objOffsets[0] = w.pos
+	w.write("%v 0 obj\n", 1)
+	w.writeVal(catalog)
+	w.write("\nendobj\n")
+
+	// document info
 	w.objOffsets[1] = w.pos
-	w.write("%v 0 obj", 2)
+	w.write("%v 0 obj\n", 2)
 	w.writeVal(info)
-	w.write("endobj\n")
+	w.write("\nendobj\n")
 
 	// page tree
 	w.objOffsets[2] = w.pos
-	w.write("%v 0 obj", 3)
+	w.write("%v 0 obj\n", 3)
 	w.writeVal(pdfDict{
 		"Type":  pdfName("Pages"),
 		"Kids":  pdfArray(kids),
 		"Count": len(kids),
 	})
-	w.write("endobj\n")
+	w.write("\nendobj\n")
 
 	xrefOffset := w.pos
 	w.write("xref\n0 %d\n0000000000 65535 f \n", len(w.objOffsets)+1)

@@ -10,9 +10,10 @@ import (
 	"strings"
 
 	"github.com/srwiley/scanx"
-	"github.com/tdewolff/parse/v2/strconv"
 	"golang.org/x/image/math/fixed"
 	"golang.org/x/image/vector"
+
+	"github.com/tdewolff/parse/v2/strconv"
 )
 
 // Tolerance is the maximum deviation from the original path in millimeters when e.g. flatting. Used for flattening in the renderers, font decorations, and path intersections.
@@ -109,6 +110,18 @@ func (ps Paths) Empty() bool {
 		}
 	}
 	return true
+}
+
+func (ps Paths) Merge() *Path {
+	n := 0
+	for _, pi := range ps {
+		n += pi.Len()
+	}
+	p := &Path{d: make([]float64, 0, n)}
+	for _, pi := range ps {
+		p = p.Append(pi)
+	}
+	return p
 }
 
 // Path defines a vector path in 2D using a series of commands (MoveTo, LineTo, QuadTo, CubeTo, ArcTo and Close). Each command consists of a number of float64 values (depending on the command) that fully define the action. The first value is the command itself (as a float64). The last two values is the end point position of the pen after the action (x,y). QuadTo defined one control point (x,y) in between, CubeTo defines two control points, and ArcTo defines (rx,ry,phi,large+sweep) i.e. the radius in x and y, its rotation (in radians) and the large and sweep booleans in one float64.
@@ -872,7 +885,7 @@ func windings(zs []Intersection) (int, bool) {
 			if !z.Same {
 				n += d
 			}
-		} else {
+		} else if i+1 < len(zs) {
 			same := z.Same || zs[i+1].Same
 			if !same {
 				if z.Into() == zs[i+1].Into() {
@@ -2341,10 +2354,8 @@ func (p *Path) ToPDF() string {
 	return sb.String()[1:] // remove the first space
 }
 
-// ToRasterizer rasterizes the path using the given rasterizer and resolution.
-func (p *Path) ToRasterizer(ras *vector.Rasterizer, resolution Resolution) {
-	// TODO: smoothen path using Ramer-...
-
+// ToVectorRasterizer rasterizes the path to *vector.Rasterizer using the given rasterizer and resolution.
+func (p *Path) ToVectorRasterizer(ras *vector.Rasterizer, resolution Resolution) {
 	dpmm := resolution.DPMM()
 	tolerance := PixelTolerance / dpmm // tolerance of 1/10 of a pixel
 	dy := float64(ras.Bounds().Size().Y)
@@ -2401,7 +2412,8 @@ func fixedPoint26_6(x, y float64) fixed.Point26_6 {
 	}
 }
 
-func (p *Path) ToScanx(ras *scanx.Scanner, dy float64, resolution Resolution) {
+// ToScanxScanner rasterizes the path to *scanx.Scanner using the given rasterizer, height, and resolution.
+func (p *Path) ToScanxScanner(ras *scanx.Scanner, dy float64, resolution Resolution) {
 	dpmm := resolution.DPMM()
 	tolerance := PixelTolerance / dpmm // tolerance of 1/10 of a pixel
 	for i := 0; i < len(p.d); {

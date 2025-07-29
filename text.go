@@ -382,11 +382,25 @@ func NewTextLine(face *FontFace, s string, halign TextAlign) *Text {
 	return t
 }
 
+type TextOptions struct {
+	// Indent is the indentation in millimeters for the first line of every paragraph.
+	Indent float64
+
+	// LineStretch is the addition to the line spacing. Zero means regular line spacing, 1.0 means double spacing.
+	LineStretch float64
+
+	// PunctuationInMargins enables putting punctuation marks in the right margins, outside the text box.
+	PunctuationInMargins bool
+
+	// Linebreaker is the line breaking algorithm. KnuthLinebreaker will give better results, but GreedyLinebreaker is faster.
+	Linebreaker text.Linebreaker
+}
+
 // NewTextBox is an advanced text formatter that will format text placement based on the settings. It takes a single font face, a string, the width or height of the box (can be zero to disable), horizontal and vertical alignment (Left, Center, Right, Top, Bottom or Justify), text indentation for the first line and line stretch (percentage to stretch the line based on the line height).
-func NewTextBox(face *FontFace, s string, width, height float64, halign, valign TextAlign, indent, lineStretch float64) *Text {
+func NewTextBox(face *FontFace, s string, width, height float64, halign, valign TextAlign, opts *TextOptions) *Text {
 	rt := NewRichText(face)
 	rt.WriteString(s)
-	return rt.ToText(width, height, halign, valign, indent, lineStretch)
+	return rt.ToText(width, height, halign, valign, opts)
 }
 
 type indexer []int
@@ -569,8 +583,45 @@ type textRun struct {
 	Rotation  text.Rotation
 }
 
+type KnuthLinebreaker struct {
+	Tolerance float64
+	Looseness int
+}
+
+func (lb KnuthLinebreaker) String() string {
+	return "KnuthLinebreaker"
+}
+
+// Linebreak breaks a list of items using a greedy line breaking algorithm. This is much faster than Knuth's algorithm.
+func (lb KnuthLinebreaker) Linebreak(items []text.Item, width float64) []text.Break {
+	tolerance := lb.Tolerance
+	if tolerance <= 0.0 {
+		tolerance = 2.0
+	}
+	return text.KnuthLinebreak(items, width, tolerance, lb.Looseness)
+}
+
+type GreedyLinebreaker struct{}
+
+func (lb GreedyLinebreaker) String() string {
+	return "GreedyLinebreaker"
+}
+
+// Linebreak breaks a list of items using a greedy line breaking algorithm. This is much faster than Knuth's algorithm.
+func (_ GreedyLinebreaker) Linebreak(items []text.Item, width float64) []text.Break {
+	return text.GreedyLinebreak(items, width)
+}
+
 // ToText takes the added text spans and fits them within a given box of certain width and height using Donald Knuth's line breaking algorithm.
-func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, indent, lineStretch float64) *Text {
+func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts *TextOptions) *Text {
+	if opts == nil {
+		opts = &TextOptions{
+			Linebreaker: KnuthLinebreaker{},
+		}
+	} else if opts.Linebreaker == nil {
+		opts.Linebreaker = KnuthLinebreaker{}
+	}
+
 	log := rt.String()
 	logRunes := []rune(log)
 	embeddingLevels := text.EmbeddingLevels(logRunes)
@@ -667,28 +718,28 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, inde
 		}
 	}
 
-	// break glyphs into lines following Donald Knuth's line breaking algorithm
-	looseness := 0
+	// break glyphs into lines
 	align := text.Left
 	if halign == Justify {
 		align = text.Justified
 	}
-	items := text.GlyphsToItems(glyphs, indent, align)
+	items := text.GlyphsToItems(glyphs, text.Options{
+		Align:                align,
+		Indent:               opts.Indent,
+		PunctuationInMargins: opts.PunctuationInMargins,
+	})
 
-	var breaks []*text.Breakpoint
-	var overflows bool
+	var breaks []text.Break
 	if 0 < len(items) {
 		if width != 0.0 {
-			var ok bool
-			breaks, ok = text.Linebreak(items, width, looseness)
-			overflows = !ok
+			breaks = opts.Linebreaker.Linebreak(items, width)
 		} else {
 			lineWidth := 0.0
 			for i, item := range items {
 				if item.Type != text.PenaltyType {
 					lineWidth += item.Width
 				} else if item.Penalty <= -text.Infinity {
-					breaks = append(breaks, &text.Breakpoint{Position: i, Width: lineWidth})
+					breaks = append(breaks, text.Break{Position: i, Width: lineWidth})
 					lineWidth = 0.0
 				}
 			}
@@ -701,156 +752,173 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, inde
 		WritingMode:     rt.mode,
 		TextOrientation: rt.orient,
 		Text:            log,
-		Overflows:       overflows,
 	}
 	glyphs = append(glyphs, text.Glyph{Cluster: uint32(len(log))}) // makes indexing easier
 
-	y := 0.0
-	ai, ag := 0, 0 // index into items and glyphs
-	lineSpacing := 1.0 + lineStretch
+	// support negative width or height
+	x0, y0, w, h := 0.0, 0.0, width, height
+	if width < 0.0 {
+		x0, w = width, -width
+	}
+	if height < 0.0 {
+		y0, h = height, -height
+	}
+
+	y := y0
+	i, ag := 0, 0 // index into items and glyphs
+	lineSpacing := 1.0 + opts.LineStretch
 	for j := range breaks {
 		// j is the current line
-		// [ai,bi) is the range of items
-		// [ag,bg) is the range of glyphs
-		eolSkip := 0 // number of glyphs after the last box
+		end := breaks[j].Position + 1
 
-		// skip glues/penalties with no glyphs
-		for ai < breaks[j].Position && items[ai].Type != text.BoxType {
-			ag += items[ai].Size
-			ai++
+		lineWidth := breaks[j].Width
+		if breaks[j].Ratio < 0.0 {
+			lineWidth += breaks[j].Shrink * breaks[j].Ratio
+		} else if halign == Justify && 0.0 < breaks[j].Ratio {
+			lineWidth += breaks[j].Stretch * breaks[j].Ratio
 		}
-		bi, bg := breaks[j].Position, ag
-
-		// apply stretching or shrinking of glue (whitespace)
-		// find run of glue/penalty and sum the width, stretch, and shrink values
-		// then calculate the final stretch/shrink factor and apply to all glyphs in the run
-		if breaks[j].Ratio != 0.0 {
-			ag2, bg2 := ag, ag
-			width, stretch, shrink := 0.0, 0.0, 0.0
-			for i := ai; i <= bi; i++ {
-				if i == bi || items[i].Type == text.BoxType {
-					if 0.0 < width {
-						adv := 0.0
-						if 0.0 < breaks[j].Ratio && !math.IsInf(stretch, 0.0) {
-							adv = breaks[j].Ratio * stretch
-						} else if breaks[j].Ratio < 0.0 && !math.IsInf(shrink, 0.0) {
-							adv = breaks[j].Ratio * shrink
-						}
-						breaks[j].Width += adv
-						adv /= width // stretch/shrink factor
-						for g := ag2; g < bg2; g++ {
-							glyphs[g].XAdvance += int32(adv*float64(glyphs[g].XAdvance) + 0.5)
-						}
-					}
-					if i == bi {
-						break
-					}
-					width, stretch, shrink = 0.0, 0.0, 0.0
-					ag2 = bg2 + items[i].Size
-				} else if items[i].Type == text.GlueType {
-					width += items[i].Width
-					stretch += items[i].Stretch
-					shrink += items[i].Shrink
-				}
-				bg2 += items[i].Size
-			}
+		if w < lineWidth {
+			t.Overflows = true
 		}
 
-		// skip glue/hyphens at end of line (before breakpoint)
-		for _, item := range items[ai:bi] {
-			if item.Type == text.BoxType {
-				eolSkip = 0
-			} else {
-				eolSkip += item.Size
-			}
-			bg += item.Size
-		}
-
-		// handle breakpoint
-		if items[bi].Type == text.PenaltyType && items[bi].Size == 1 && glyphs[bg].Text == '\u00AD' {
-			// hyphenate at breakpoint
-			// TODO: hyphen depends on script
-			id := glyphs[bg].SFNT.GlyphIndex('-')
-			glyphs[bg].ID = id
-			glyphs[bg].XAdvance = int32(glyphs[bg].SFNT.GlyphAdvance(id))
-			glyphs[bg].Text = '-'
-		} else {
-			eolSkip += items[bi].Size
-		}
-		bg += items[bi].Size
-		bi++
-
-		// absorb whitespace after breakpoint
-		for bi < len(items) && items[bi].Type == text.GlueType {
-			eolSkip += items[bi].Size
-			bg += items[bi].Size
-			bi++
+		// shift line to centre or right
+		x := x0
+		if halign == Right {
+			x += w - lineWidth
+		} else if halign == Center || halign == Middle {
+			x += (w - lineWidth) / 2.0
 		}
 
 		// build text spans of line
-		x := 0.0
-		if halign == Right {
-			x += width - breaks[j].Width
-		} else if halign == Center || halign == Middle {
-			x += (width - breaks[j].Width) / 2.0
-		}
-		if j == 0 {
-			x += indent
-		}
-
 		line := line{}
-		a := ag
-		k := glyphIndices.index(a) // index into runs
-		for b := a + 1; b <= bg-eolSkip; b++ {
-			nextK := glyphIndices.index(b)
-			if nextK != k || b == bg-eolSkip {
-				run := runs[k]
+		merge := false
+		for i < end {
+			bg := ag
+			W, Y, Z := 0.0, 0.0, 0.0
 
-				var w float64
-				var objects []TextSpanObject
-				if obj, ok := rt.objects[glyphs[a].Cluster]; ok {
-					// path/image objects
-					if rt.mode == HorizontalTB {
-						obj.X = w
-						w += obj.Width
-					} else {
-						obj.X = -obj.Width / 2.0
-						obj.Y = -w - obj.Height
-						w += obj.Height
-					}
-					objects = []TextSpanObject{obj}
-				} else {
-					if run.Direction == text.RightToLeft || run.Direction == text.BottomToTop {
-						// logical to visual order
-						// this undoes the previous reversal after shaping for line breaking
-						for i := 0; i < (b-a)/2; i++ {
-							glyphs[a+i], glyphs[b-1-i] = glyphs[b-1-i], glyphs[a+i]
-						}
-					}
-					w = run.Face.textWidth(glyphs[a:b])
-					t.fonts[run.Face.Font] = true
-				}
-
-				ac, bc := glyphs[a].Cluster, glyphs[b].Cluster
-				if run.Direction == text.RightToLeft || run.Direction == text.BottomToTop {
-					ac = glyphs[b-1].Cluster
-				}
-				line.spans = append(line.spans, TextSpan{
-					X:         x,
-					Width:     w,
-					Face:      run.Face,
-					Text:      log[ac:bc],
-					Objects:   objects,
-					Glyphs:    glyphs[a:b],
-					Direction: run.Direction,
-					Rotation:  run.Rotation,
-					Level:     run.Level,
-				})
-
-				k = nextK
-				x += w
-				a = b
+			// merge adjacent boxes
+			for i < end && items[i].Type == text.BoxType {
+				bg += items[i].Size
+				W += items[i].Width
+				i++
 			}
+
+			// append glyphs in trailing glues or the final penalty (hyphen)
+			skip := 0
+			for i < end && items[i].Type != text.BoxType {
+				if items[i].Type == text.GlueType {
+					Y += items[i].Stretch
+					Z += items[i].Shrink
+				} else if items[i].Size != 0 {
+					// penalty with glyphs, either unused potential hyphen or used hyphen/newline, stop the loop
+					if i+1 < end {
+						// potential but unused hyphen
+					} else if glyphs[bg].Text == '\u00AD' {
+						// hyphen
+						id := glyphs[bg].SFNT.GlyphIndex('-')
+						glyphs[bg].ID = id
+						glyphs[bg].XAdvance = int32(glyphs[bg].SFNT.GlyphAdvance(id))
+						glyphs[bg].Text = '-'
+						bg += items[i].Size
+						W += items[i].Width
+					} else {
+						// newline
+						skip += items[i].Size
+					}
+					i++
+					break
+				}
+				bg += items[i].Size
+				W += items[i].Width
+				i++
+			}
+
+			// add glue after penalty
+			if i < len(items) && items[i-1].Type == text.PenaltyType && items[i].Type == text.GlueType {
+				Y += items[i].Stretch
+				Z += items[i].Shrink
+				skip += items[i].Size
+				i++
+			}
+
+			// [ag,bg) is the range of glyphs
+			k := glyphIndices.index(ag) // index into runs
+			for a, b := ag, ag+1; b <= bg; b++ {
+				nextK := glyphIndices.index(b)
+				if nextK != k || b == bg {
+					run := runs[k]
+
+					var width float64
+					var objects []TextSpanObject
+					if obj, ok := rt.objects[glyphs[a].Cluster]; ok {
+						// path/image objects
+						if rt.mode == HorizontalTB {
+							width += obj.Width
+						} else {
+							obj.X = -obj.Width / 2.0
+							obj.Y = -obj.Height
+							width += obj.Height
+						}
+						objects = []TextSpanObject{obj}
+					} else {
+						if run.Direction == text.RightToLeft || run.Direction == text.BottomToTop {
+							// logical to visual order
+							// this undoes the previous reversal after shaping for line breaking
+							for i := 0; i < (b-a)/2; i++ {
+								glyphs[a+i], glyphs[b-1-i] = glyphs[b-1-i], glyphs[a+i]
+							}
+						}
+						width = run.Face.textWidth(glyphs[a:b])
+						t.fonts[run.Face.Font] = true
+					}
+
+					ac, bc := glyphs[a].Cluster, glyphs[b].Cluster
+					if run.Direction == text.RightToLeft || run.Direction == text.BottomToTop {
+						ac = glyphs[b-1].Cluster
+					}
+					if b == bg && skip != 0 {
+						bc = glyphs[b+skip].Cluster
+					}
+					s := TextSpan{
+						X:         x,
+						Width:     width,
+						Face:      run.Face,
+						Text:      log[ac:bc],
+						Objects:   objects,
+						Glyphs:    glyphs[a:b:b],
+						Direction: run.Direction,
+						Rotation:  run.Rotation,
+						Level:     run.Level,
+					}
+					if !merge || len(line.spans) == 0 {
+						line.spans = append(line.spans, s)
+					} else if prev := &line.spans[len(line.spans)-1]; prev.Face != s.Face || prev.Direction != s.Direction || prev.Rotation != s.Rotation || prev.Level != s.Level {
+						line.spans = append(line.spans, s)
+					} else {
+						// merge spans
+						prev.Width += width
+						prev.Text += log[ac:bc]
+						prev.Objects = append(prev.Objects, objects...)
+						prev.Glyphs = append(prev.Glyphs, glyphs[a:b:b]...)
+					}
+					k = nextK
+					x += width
+					W -= width
+					a = b
+				}
+			}
+
+			// stretch or shrink glues
+			if breaks[j].Ratio < 0.0 {
+				x += W + Z*breaks[j].Ratio
+			} else if halign == Justify && 0.0 < breaks[j].Ratio {
+				x += W + Y*breaks[j].Ratio
+			} else if Epsilon < W {
+				x += W
+			} else {
+				merge = true
+			}
+			ag = bg + skip
 		}
 
 		// set y position of line
@@ -864,9 +932,9 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, inde
 			ascent *= lineSpacing
 		}
 		bottom *= lineSpacing
-		if height != 0.0 && height < y+ascent+descent {
+		if height != 0.0 && h < y+ascent+descent {
 			// line doesn't fit
-			t.Text = log[:glyphs[a].Cluster]
+			t.Text = log[:glyphs[ag].Cluster]
 			break
 		}
 		line.y = y + ascent
@@ -874,8 +942,6 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, inde
 		// add line
 		t.lines = append(t.lines, line)
 		y += ascent + bottom
-
-		ai, ag = bi, bg
 	}
 
 	// reorder from logical to visual order of text spans in line
@@ -898,7 +964,7 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, inde
 		}
 	}
 	if valign == Center || valign == Middle || valign == Bottom {
-		dy := height - y
+		dy := h - y
 		if valign == Center || valign == Middle {
 			dy /= 2.0
 		}
@@ -906,7 +972,7 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, inde
 			t.lines[j].y += dy
 		}
 	} else if valign == Justify {
-		ddy := (height - y) / float64(len(t.lines)-1)
+		ddy := (h - y) / float64(len(t.lines)-1)
 		dy := 0.0
 		for j := range t.lines {
 			t.lines[j].y += dy
@@ -915,7 +981,7 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, inde
 	}
 	if rt.mode == VerticalRL {
 		for j := range t.lines {
-			t.lines[j].y = height - t.lines[j].y
+			t.lines[j].y = h - t.lines[j].y
 		}
 	}
 
@@ -926,12 +992,14 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, inde
 				t.Width = math.Max(t.Width, last.X+last.Width)
 			}
 		}
+	} else {
+		t.Width = width
 	}
 	if height == 0.0 {
-		height = y
+		t.Height = y
+	} else {
+		t.Height = height
 	}
-	t.Width = width
-	t.Height = height
 	return t
 }
 
