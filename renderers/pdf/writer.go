@@ -17,8 +17,8 @@ import (
 
 	"golang.org/x/text/encoding/charmap"
 
-	"github.com/Canvas/canvas"
-	canvasText "github.com/Canvas/canvas/text"
+	"github.com/Seanld/canvas"
+	canvasText "github.com/Seanld/canvas/text"
 	canvasFont "github.com/tdewolff/font"
 )
 
