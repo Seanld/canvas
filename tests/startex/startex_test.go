@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tdewolff/canvas"
-	"github.com/tdewolff/canvas/renderers"
+	"github.com/Seanld/canvas"
+	"github.com/Seanld/canvas/renderers"
 )
 
 func TestStarTex(t *testing.T) {

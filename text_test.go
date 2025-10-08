@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/tdewolff/canvas/text"
+	"github.com/Seanld/canvas/text"
 	"github.com/tdewolff/test"
 )
 
