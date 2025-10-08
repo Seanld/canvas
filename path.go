@@ -899,7 +899,7 @@ func windings(zs []Intersection) (int, bool) {
 }
 
 // Windings returns the number of windings at the given point, i.e. the sum of windings for each time a ray from (x,y) towards (∞,y) intersects the path. Counter clock-wise intersections count as positive, while clock-wise intersections count as negative. Additionally, it returns whether the point is on a path's boundary (which counts as being on the exterior).
-func (p *Path) Windings(x, y float64) (int, bool) {
+func (p *Path) WindingsAt(x, y float64) (int, bool) {
 	n := 0
 	boundary := false
 	for _, pi := range p.Split() {
@@ -914,7 +914,7 @@ func (p *Path) Windings(x, y float64) (int, bool) {
 }
 
 // Crossings returns the number of crossings with the path from the given point outwards, i.e. the number of times a ray from (x,y) towards (∞,y) intersects the path. Additionally, it returns whether the point is on a path's boundary (which does not count towards the number of crossings).
-func (p *Path) Crossings(x, y float64) (int, bool) {
+func (p *Path) CrossingsAt(x, y float64) (int, bool) {
 	n := 0
 	boundary := false
 	for _, pi := range p.Split() {
@@ -941,8 +941,8 @@ func (p *Path) Crossings(x, y float64) (int, bool) {
 // Contains returns whether the point (x,y) is contained/filled by the path. This depends on the
 // FillRule. It uses a ray from (x,y) toward (∞,y) and counts the number of intersections with
 // the path. When the point is on the boundary it is considered to be on the path's exterior.
-func (p *Path) Contains(x, y float64, fillRule FillRule) bool {
-	n, boundary := p.Windings(x, y)
+func (p *Path) ContainsPoint(x, y float64, fillRule FillRule) bool {
+	n, boundary := p.WindingsAt(x, y)
 	if boundary {
 		return true
 	}
@@ -1391,7 +1391,7 @@ func (p *Path) XMonotone() *Path {
 	return p.replace(nil, quad, cube, arc)
 }
 
-// replace replaces path segments by their respective functions, each returning the path that will replace the segment or nil if no replacement is to be performed. The line function will take the start and end points. The bezier function will take the start point, control point 1 and 2, and the end point (i.e. a cubic Bézier, quadratic Béziers will be implicitly converted to cubic ones). The arc function will take a start point, the major and minor radii, the radial rotaton counter clockwise, the large and sweep booleans, and the end point. The replacing path will replace the path segment without any checks, you need to make sure the be moved so that its start point connects with the last end point of the base path before the replacement. If the end point of the replacing path is different that the end point of what is replaced, the path that follows will be displaced.
+// replace replaces path segments by their respective functions, each returning the path that will replace the segment or nil if no replacement is to be performed. The line function will take the start and end points. The bezier function will take the start point, control point 1 and 2, and the end point (i.e. a cubic Bézier, quadratic Béziers will be implicitly converted to cubic ones). The arc function will take a start point, the major and minor radii, the radial rotation counter clockwise, the large and sweep booleans, and the end point. The replacing path will replace the path segment without any checks, you need to make sure the be moved so that its start point connects with the last end point of the base path before the replacement. If the end point of the replacing path is different that the end point of what is replaced, the path that follows will be displaced.
 func (p *Path) replace(
 	line func(Point, Point) *Path,
 	quad func(Point, Point, Point) *Path,

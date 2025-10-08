@@ -131,7 +131,7 @@ func (p *Path) Settle(fillRule FillRule) *Path {
 
 // Settle is the same as Path.Settle, but faster if paths are already split. Each resulting path
 // is a single filling path followed by its holes as subpaths.
-func (ps Paths) Settle(fillRule FillRule) []*Path {
+func (ps Paths) Settle(fillRule FillRule) Paths {
 	return bentleyOttmann(ps, nil, opSettle, fillRule)
 }
 
@@ -148,7 +148,7 @@ func (p *Path) And(q *Path) *Path {
 
 // And is the same as Path.And, but faster if paths are already split. Each resulting path
 // is a single filling path followed by its holes as subpaths.
-func (ps Paths) And(qs Paths) []*Path {
+func (ps Paths) And(qs Paths) Paths {
 	return bentleyOttmann(ps, qs, opAND, NonZero)
 }
 
@@ -165,7 +165,7 @@ func (p *Path) Or(q *Path) *Path {
 
 // Or is the same as Path.Or, but faster if paths are already split. Each resulting path
 // is a single filling path followed by its holes as subpaths.
-func (ps Paths) Or(qs Paths) []*Path {
+func (ps Paths) Or(qs Paths) Paths {
 	return bentleyOttmann(ps, qs, opOR, NonZero)
 }
 
@@ -182,7 +182,7 @@ func (p *Path) Xor(q *Path) *Path {
 
 // Xor is the same as Path.Xor, but faster if paths are already split. Each resulting path
 // is a single filling path followed by its holes as subpaths.
-func (ps Paths) Xor(qs Paths) []*Path {
+func (ps Paths) Xor(qs Paths) Paths {
 	return bentleyOttmann(ps, qs, opXOR, NonZero)
 }
 
@@ -199,7 +199,7 @@ func (p *Path) Not(q *Path) *Path {
 
 // Not is the same as Path.Not, but faster if paths are already split. Each resulting path
 // is a single filling path followed by its holes as subpaths.
-func (ps Paths) Not(qs Paths) []*Path {
+func (ps Paths) Not(qs Paths) Paths {
 	return bentleyOttmann(ps, qs, opNOT, NonZero)
 }
 
@@ -216,7 +216,7 @@ func (p *Path) DivideBy(q *Path) *Path {
 
 // DivideBy is the same as Path.DivideBy, but faster if paths are already split. Each resulting
 // path is a single filling path followed by its holes as subpaths.
-func (ps Paths) DivideBy(qs Paths) []*Path {
+func (ps Paths) DivideBy(qs Paths) Paths {
 	return bentleyOttmann(ps, qs, opDIV, NonZero)
 }
 
@@ -913,7 +913,7 @@ func (s *SweepStatus) Remove(n *SweepNode) {
 		}
 		succ.parent.swapChild(succ, succ.right)
 
-		// swap succesor with deleted node
+		// swap successor with deleted node
 		succ.parent, succ.left, succ.right = n.parent, n.left, n.right
 		if n.parent != nil {
 			n.parent.swapChild(n, succ)
@@ -1729,8 +1729,7 @@ func (s *SweepPoint) mergeOverlapping(op pathOp, fillRule FillRule) {
 }
 
 func bentleyOttmann(ps, qs Paths, op pathOp, fillRule FillRule) Paths {
-	// TODO: make public and add grid spacing argument
-	// TODO: support OpDIV, keeping only subject, or both subject and clipping subpaths
+	// TODO: add grid spacing argument
 	// TODO: add Intersects/Touches functions (return bool)
 	// TODO: add Intersections function (return []Point)
 	// TODO: support Cut to cut a path in subpaths between intersections (not polygons)
@@ -1801,11 +1800,11 @@ func bentleyOttmann(ps, qs Paths, op pathOp, fillRule FillRule) Paths {
 	//
 	// The difference with Hobby's steps is that we advance Bentley-Ottmann for the entire column,
 	// and only then do we calculate crossing segments. I'm not sure what reason Hobby has to do
-	// this in two fases. Also, Hobby uses a shadow sweep line status structure which contains the
+	// this in two phases. Also, Hobby uses a shadow sweep line status structure which contains the
 	// segments sorted after snapping. Instead of using two sweep status structures (the original
 	// Bentley-Ottmann and the shadow with snapped segments), we sort the status after each column.
 	// Additionally, we need to keep the sweep line queue structure ordered as well for the result
-	// polygon (instead of the queue we gather the events for each sqaure, and sort those), and we
+	// polygon (instead of the queue we gather the events for each square, and sort those), and we
 	// need to calculate the sweep fields for the result polygon.
 	//
 	// It is best to think of processing the tolerance squares, one at a time moving bottom-to-top,
@@ -1844,7 +1843,7 @@ func bentleyOttmann(ps, qs Paths, op pathOp, fillRule FillRule) Paths {
 
 	boInitPoolsOnce() // use pools for SweepPoint and SweepNode to amortize repeated calls to BO
 
-	// return in case of one path is empty
+	// return when one path is empty
 	if op == opSettle {
 		qs = nil
 	} else if qs.Empty() {
