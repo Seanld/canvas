@@ -31,6 +31,9 @@ type svgState struct {
 	textAnchor       string
 	fontFamily       string
 	fontSize         float64
+	fillOpacity      float64
+	strokeOpacity    float64
+	currentColor     color.RGBA
 }
 
 var svgDefaultState = svgState{
@@ -38,6 +41,9 @@ var svgDefaultState = svgState{
 	textAnchor:       "start",
 	fontFamily:       "serif",
 	fontSize:         16.0, // in px
+	fillOpacity:      1.0,
+	strokeOpacity:    1.0,
+	currentColor:     Black,
 }
 
 type svgCanvas struct {
@@ -83,12 +89,12 @@ func (svg *svgParser) parseViewBox(attrWidth, attrHeight, attrViewBox string) (f
 	if attrWidth != "" && !strings.HasSuffix(attrWidth, "%") {
 		width = svg.parseDimension(attrWidth, 1.0)
 	} else {
-		width = (viewbox[2] - viewbox[0]) * 25.4 / 96.0
+		width = viewbox[2] * 25.4 / 96.0
 	}
 	if attrHeight != "" && !strings.HasSuffix(attrHeight, "%") {
 		height = svg.parseDimension(attrHeight, 1.0)
 	} else {
-		height = (viewbox[3] - viewbox[1]) * 25.4 / 96.0
+		height = viewbox[3] * 25.4 / 96.0
 	}
 	return width, height, viewbox
 }
@@ -100,8 +106,8 @@ func (svg *svgParser) init(width, height float64, viewbox [4]float64) {
 	svg.c = New(width, height)
 	svg.ctx = NewContext(svg.c)
 	svg.ctx.SetCoordSystem(CartesianIV)
-	if 0.0 < (viewbox[2]-viewbox[0]) && 0.0 < (viewbox[3]-viewbox[1]) {
-		m := Identity.Scale(width/(viewbox[2]-viewbox[0]), height/(viewbox[3]-viewbox[1])).Translate(-viewbox[0], -viewbox[1])
+	if 0.0 < viewbox[2] && 0.0 < viewbox[3] {
+		m := Identity.Scale(width/viewbox[2], height/viewbox[3]).Translate(-viewbox[0], -viewbox[1])
 		svg.ctx.SetView(m)
 	}
 	svg.ctx.SetStrokeJoiner(MiterJoiner{BevelJoin, svgDefaultState.strokeMiterLimit})
@@ -254,7 +260,13 @@ func (svg *svgParser) parseColor(v string) color.RGBA {
 			}
 			return Black
 		}
-		col.A = svg.parseColorComponent(comps[3])
+		// Alpha is a decimal value between 0.0 and 1.0
+		alphaStr := strings.TrimSpace(comps[3])
+		alpha, err := strconv.ParseFloat(alphaStr, 64)
+		if err != nil && svg.err == nil {
+			svg.err = parse.NewErrorLexer(svg.z, "bad alpha component: %w: %s", err, alphaStr)
+		}
+		col.A = uint8(alpha * 255.0)
 		col.R = uint8(float64(svg.parseColorComponent(comps[0]))*float64(col.A)/255.0 + 0.5)
 		col.G = uint8(float64(svg.parseColorComponent(comps[1]))*float64(col.A)/255.0 + 0.5)
 		col.B = uint8(float64(svg.parseColorComponent(comps[2]))*float64(col.A)/255.0 + 0.5)
@@ -327,13 +339,13 @@ func (svg *svgParser) parseTransform(v string) Matrix {
 				if len(d) != 1 {
 					svg.err = parse.NewErrorLexer(svg.z, "bad transform skewX")
 				} else {
-					// TODO
+					m = m.Shear(math.Tan(d[0]*math.Pi/180), 0)
 				}
 			case "skewy":
 				if len(d) != 1 {
 					svg.err = parse.NewErrorLexer(svg.z, "bad transform skewY")
 				} else {
-					// TODO
+					m = m.Shear(0, math.Tan(d[0]*math.Pi/180))
 				}
 			}
 			j = i + 1
@@ -459,7 +471,7 @@ func (svg *svgParser) parseDefs(l *xml.Lexer) {
 			y1 := svg.parseDimension(tag.attrs["y1"], 1.0)
 			y2 := svg.parseDimension(tag.attrs["y2"], 1.0)
 
-			stops := Stops{}
+			grad := Grad{}
 			for _, tag := range tag.content {
 				if tag.name != "stop" {
 					continue
@@ -469,12 +481,9 @@ func (svg *svgParser) parseDefs(l *xml.Lexer) {
 				stopColor := svg.parseColor(tag.attrs["stop-color"])
 				if v, ok := tag.attrs["stop-opacity"]; ok {
 					stopOpacity := svg.parseNumber(v)
-					stopColor.R = uint8(float64(stopColor.R) / float64(stopColor.A) * stopOpacity * 255.0)
-					stopColor.G = uint8(float64(stopColor.G) / float64(stopColor.A) * stopOpacity * 255.0)
-					stopColor.B = uint8(float64(stopColor.B) / float64(stopColor.A) * stopOpacity * 255.0)
-					stopColor.A = uint8(stopOpacity * 255.0)
+					stopColor = ToOpacity(stopColor, stopOpacity)
 				}
-				stops.Add(offset, stopColor)
+				grad.Add(offset, stopColor)
 			}
 			svg.defs[id] = func(attr string, c *Canvas) {
 				layers := c.layers[c.zindex]
@@ -486,24 +495,104 @@ func (svg *svgParser) parseDefs(l *xml.Lexer) {
 				rect := layer.path.FastBounds()
 				x1t, y1t, x2t, y2t := x1, y1, x2, y2
 				if x1p {
-					x1t = (rect.X0 + rect.W()*x1t) * 25.4 / 96.0
+					x1t = rect.X0 + rect.W()*x1t
 				}
 				if y1p {
-					y1t = (rect.Y0 + rect.H()*y1t) * 25.4 / 96.0
+					y1t = rect.Y0 + rect.H()*y1t
 				}
 				if x2p {
-					x2t = (rect.X0 + rect.W()*x2t) * 25.4 / 96.0
+					x2t = rect.X0 + rect.W()*x2t
 				}
 				if y2p {
-					y2t = (rect.Y0 + rect.H()*y2t) * 25.4 / 96.0
+					y2t = rect.Y0 + rect.H()*y2t
 				}
-				linearGradient := NewLinearGradient(Point{x1t, y1t}, Point{x2t, y2t})
-				linearGradient.Stops = stops
 
+				linearGradient := grad.ToLinear(Point{x1t, y1t}, Point{x2t, y2t})
 				if attr == "fill" {
 					layer.style.Fill = Paint{Gradient: linearGradient}
 				} else if attr == "stroke" {
 					layer.style.Stroke = Paint{Gradient: linearGradient}
+				}
+			}
+		case "radialGradient":
+			if _, ok := tag.attrs["cx"]; !ok {
+				tag.attrs["cx"] = "50%"
+			}
+			if _, ok := tag.attrs["cy"]; !ok {
+				tag.attrs["cy"] = "50%"
+			}
+			if _, ok := tag.attrs["r"]; !ok {
+				tag.attrs["r"] = "50%"
+			}
+			if _, ok := tag.attrs["fx"]; !ok {
+				tag.attrs["fx"] = tag.attrs["cx"]
+			}
+			if _, ok := tag.attrs["fy"]; !ok {
+				tag.attrs["fy"] = tag.attrs["cy"]
+			}
+			cxp := strings.HasSuffix(tag.attrs["cx"], "%")
+			cyp := strings.HasSuffix(tag.attrs["cy"], "%")
+			rp := strings.HasSuffix(tag.attrs["r"], "%")
+			fxp := strings.HasSuffix(tag.attrs["fx"], "%")
+			fyp := strings.HasSuffix(tag.attrs["fy"], "%")
+			frp := strings.HasSuffix(tag.attrs["fr"], "%")
+			cx := svg.parseDimension(tag.attrs["cx"], 1.0)
+			cy := svg.parseDimension(tag.attrs["cy"], 1.0)
+			r := svg.parseDimension(tag.attrs["r"], 1.0)
+			fx := svg.parseDimension(tag.attrs["fx"], 1.0)
+			fy := svg.parseDimension(tag.attrs["fy"], 1.0)
+			fr := svg.parseDimension(tag.attrs["fr"], 1.0)
+
+			grad := Grad{}
+			for _, tag := range tag.content {
+				if tag.name != "stop" {
+					continue
+				}
+
+				offset := svg.parseNumber(tag.attrs["offset"])
+				stopColor := svg.parseColor(tag.attrs["stop-color"])
+				if v, ok := tag.attrs["stop-opacity"]; ok {
+					stopOpacity := svg.parseNumber(v)
+					stopColor = ToOpacity(stopColor, stopOpacity)
+				}
+				grad.Add(offset, stopColor)
+			}
+
+			svg.defs[id] = func(attr string, c *Canvas) {
+				layers := c.layers[c.zindex]
+				if len(layers) == 0 || layers[len(layers)-1].path == nil {
+					return
+				}
+				layer := &layers[len(layers)-1]
+
+				rect := layer.path.FastBounds()
+				cxt, cyt, rt := cx, cy, r
+				if cxp {
+					cxt = rect.X0 + rect.W()*cxt
+				}
+				if cyp {
+					cyt = rect.Y0 + rect.H()*cyt
+				}
+				if rp {
+					rt = math.Max(rect.W(), rect.H()) * rt
+				}
+
+				fxt, fyt, frt := fx, fy, fr
+				if fxp {
+					fxt = rect.X0 + rect.W()*fxt
+				}
+				if fyp {
+					fyt = rect.Y0 + rect.H()*fyt
+				}
+				if frp {
+					frt = math.Max(rect.W(), rect.H()) * frt
+				}
+
+				radialGradient := grad.ToRadial(Point{fxt, fyt}, frt, Point{cxt, cyt}, rt)
+				if attr == "fill" {
+					layer.style.Fill = Paint{Gradient: radialGradient}
+				} else if attr == "stroke" {
+					layer.style.Stroke = Paint{Gradient: radialGradient}
 				}
 			}
 		case "marker":
@@ -595,9 +684,84 @@ func (svg *svgParser) parseDefs(l *xml.Lexer) {
 							view = view.Scale(strokeWidth, strokeWidth)
 						}
 
-						f := height / (viewbox[3] - viewbox[1])
+						// Scale factor from viewBox to marker coordinates.
+						// When no viewBox, content uses marker coordinate space directly (no scaling).
+						f := 1.0
+						if viewbox[3] != 0 {
+							f = height / viewbox[3]
+						}
 						view = view.Translate(-refx*f, -refy*f).Scale(f, f).ReflectYAbout(height / 2.0)
 						marker.RenderViewTo(c, view)
+					}
+				}
+			}
+		case "pattern":
+			width := svg.parseDimension(tag.attrs["width"], svg.width)
+			height := svg.parseDimension(tag.attrs["height"], svg.height)
+			if width == 0.0 || height == 0.0 {
+				break // Pattern with zero dimensions does not render
+			}
+
+			angle := 0.0
+			if transform := tag.attrs["patternTransform"]; transform != "" {
+				m := svg.parseTransform(transform)
+				angle = math.Atan2(m[1][0], m[0][0]) * 180.0 / math.Pi
+			}
+
+			var lineTag *svgTag
+			for _, child := range tag.content {
+				if child.name == "line" {
+					lineTag = child
+					break
+				}
+			}
+
+			if lineTag != nil {
+				strokeWidth := 1.0
+				if sw := lineTag.attrs["stroke-width"]; sw != "" {
+					strokeWidth = svg.parseDimension(sw, 0.0)
+				}
+
+				usesCurrentColor := false
+				strokeColor := Black
+				if sc := lineTag.attrs["stroke"]; sc == "currentColor" {
+					usesCurrentColor = true
+				} else if sc != "" {
+					strokeColor = svg.parseColor(sc)
+				}
+
+				strokeOpacity := 1.0
+				if so := lineTag.attrs["stroke-opacity"]; so != "" {
+					strokeOpacity = svg.parseNumber(so)
+				}
+
+				distance := math.Max(width, height)
+
+				svg.defs[id] = func(attr string, c *Canvas) {
+					layers := c.layers[c.zindex]
+					if len(layers) == 0 || layers[len(layers)-1].path == nil {
+						return
+					}
+					layer := &layers[len(layers)-1]
+
+					col := strokeColor
+					if usesCurrentColor {
+						col = svg.state.currentColor
+					}
+
+					if strokeOpacity < 1.0 {
+						col.A = uint8(float64(col.A) * strokeOpacity)
+						col.R = uint8(float64(col.R) * strokeOpacity)
+						col.G = uint8(float64(col.G) * strokeOpacity)
+						col.B = uint8(float64(col.B) * strokeOpacity)
+					}
+
+					hatch := NewLineHatch(col, angle, distance, strokeWidth)
+
+					if attr == "fill" {
+						layer.style.Fill = Paint{Pattern: hatch}
+					} else if attr == "stroke" {
+						layer.style.Stroke = Paint{Pattern: hatch}
 					}
 				}
 			}
@@ -729,14 +893,78 @@ func (svg *svgParser) setAttribute(key, val string) {
 	case "fill":
 		if id := svg.parseUrlID(val); id != "" {
 			svg.activeDefs["fill"] = svg.defs[id]
+			// Set a temporary fill so that DrawPath doesn't early return
+			svg.ctx.SetFill(Paint{Color: Black})
 		} else {
 			svg.ctx.SetFill(svg.parsePaint(val))
+			if svg.state.fillOpacity != 1.0 {
+				svg.ctx.Style.Fill.Color = ToOpacity(svg.ctx.Style.Fill.Color, svg.state.fillOpacity)
+				if svg.ctx.Style.Fill.IsGradient() {
+					switch grad := svg.ctx.Style.Fill.Gradient.(type) {
+					case *LinearGradient:
+						for i := range grad.Grad {
+							grad.Grad[i].Color = ToOpacity(grad.Grad[i].Color, svg.state.fillOpacity)
+						}
+					case *RadialGradient:
+						for i := range grad.Grad {
+							grad.Grad[i].Color = ToOpacity(grad.Grad[i].Color, svg.state.fillOpacity)
+						}
+					}
+				}
+			}
+		}
+	case "fill-opacity":
+		svg.state.fillOpacity = svg.parseNumber(val)
+		svg.ctx.Style.Fill.Color = ToOpacity(svg.ctx.Style.Fill.Color, svg.state.fillOpacity)
+		if svg.ctx.Style.Fill.IsGradient() {
+			switch grad := svg.ctx.Style.Stroke.Gradient.(type) {
+			case *LinearGradient:
+				for i := range grad.Grad {
+					grad.Grad[i].Color = ToOpacity(grad.Grad[i].Color, svg.state.fillOpacity)
+				}
+			case *RadialGradient:
+				for i := range grad.Grad {
+					grad.Grad[i].Color = ToOpacity(grad.Grad[i].Color, svg.state.fillOpacity)
+				}
+			}
 		}
 	case "stroke":
 		if id := svg.parseUrlID(val); id != "" {
 			svg.activeDefs["stroke"] = svg.defs[id]
+			// Set a temporary stroke so that DrawPath doesn't early return
+			svg.ctx.SetStroke(Paint{Color: Black})
 		} else {
 			svg.ctx.SetStroke(svg.parsePaint(val))
+			if svg.state.strokeOpacity != 1.0 {
+				svg.ctx.Style.Stroke.Color = ToOpacity(svg.ctx.Style.Stroke.Color, svg.state.strokeOpacity)
+				if svg.ctx.Style.Stroke.IsGradient() {
+					switch grad := svg.ctx.Style.Stroke.Gradient.(type) {
+					case *LinearGradient:
+						for i := range grad.Grad {
+							grad.Grad[i].Color = ToOpacity(grad.Grad[i].Color, svg.state.strokeOpacity)
+						}
+					case *RadialGradient:
+						for i := range grad.Grad {
+							grad.Grad[i].Color = ToOpacity(grad.Grad[i].Color, svg.state.strokeOpacity)
+						}
+					}
+				}
+			}
+		}
+	case "stroke-opacity":
+		svg.state.strokeOpacity = svg.parseNumber(val)
+		svg.ctx.Style.Stroke.Color = ToOpacity(svg.ctx.Style.Stroke.Color, svg.state.strokeOpacity)
+		if svg.ctx.Style.Stroke.IsGradient() {
+			switch grad := svg.ctx.Style.Stroke.Gradient.(type) {
+			case *LinearGradient:
+				for i := range grad.Grad {
+					grad.Grad[i].Color = ToOpacity(grad.Grad[i].Color, svg.state.strokeOpacity)
+				}
+			case *RadialGradient:
+				for i := range grad.Grad {
+					grad.Grad[i].Color = ToOpacity(grad.Grad[i].Color, svg.state.strokeOpacity)
+				}
+			}
 		}
 	case "stroke-width":
 		svg.ctx.SetStrokeWidth(svg.parseDimension(val, svg.diagonal))
@@ -782,6 +1010,8 @@ func (svg *svgParser) setAttribute(key, val string) {
 		svg.state.fontFamily = val
 	case "font-size":
 		svg.state.fontSize = svg.parseDimension(val, svg.height)
+	case "color":
+		svg.state.currentColor = svg.parseColor(val)
 	case "marker-start":
 		if id := svg.parseUrlID(val); id != "" {
 			svg.activeDefs["marker-start"] = svg.defs[id]
@@ -940,7 +1170,13 @@ func parseSVGFull(r io.Reader) (*Canvas, []SVGPath, error) {
 			// handle special tags
 			if tag == "style" {
 				tt, data = l.Next()
-				if tt == xml.TextToken {
+				if tt == xml.CDATAToken {
+					svg.parseStyle(l.Text())
+					tt, data = l.Next() // end token
+					for tt != xml.EndTagToken {
+						tt, data = l.Next() // end token
+					}
+				} else if tt == xml.TextToken {
 					svg.parseStyle(data)
 					tt, data = l.Next() // end token
 				} else {
@@ -1191,151 +1427,151 @@ func (rule cssRule) String() string {
 }
 
 var cssColors = map[string]color.RGBA{
-	"aliceblue":            color.RGBA{240, 248, 255, 255},
-	"antiquewhite":         color.RGBA{250, 235, 215, 255},
-	"aqua":                 color.RGBA{0, 255, 255, 255},
-	"aquamarine":           color.RGBA{127, 255, 212, 255},
-	"azure":                color.RGBA{240, 255, 255, 255},
-	"beige":                color.RGBA{245, 245, 220, 255},
-	"bisque":               color.RGBA{255, 228, 196, 255},
-	"black":                color.RGBA{0, 0, 0, 255},
-	"blanchedalmond":       color.RGBA{255, 235, 205, 255},
-	"blue":                 color.RGBA{0, 0, 255, 255},
-	"blueviolet":           color.RGBA{138, 43, 226, 255},
-	"brown":                color.RGBA{165, 42, 42, 255},
-	"burlywood":            color.RGBA{222, 184, 135, 255},
-	"cadetblue":            color.RGBA{95, 158, 160, 255},
-	"chartreuse":           color.RGBA{127, 255, 0, 255},
-	"chocolate":            color.RGBA{210, 105, 30, 255},
-	"coral":                color.RGBA{255, 127, 80, 255},
-	"cornflowerblue":       color.RGBA{100, 149, 237, 255},
-	"cornsilk":             color.RGBA{255, 248, 220, 255},
-	"crimson":              color.RGBA{220, 20, 60, 255},
-	"cyan":                 color.RGBA{0, 255, 255, 255},
-	"darkblue":             color.RGBA{0, 0, 139, 255},
-	"darkcyan":             color.RGBA{0, 139, 139, 255},
-	"darkgoldenrod":        color.RGBA{184, 134, 11, 255},
-	"darkgray":             color.RGBA{169, 169, 169, 255},
-	"darkgreen":            color.RGBA{0, 100, 0, 255},
-	"darkgrey":             color.RGBA{169, 169, 169, 255},
-	"darkkhaki":            color.RGBA{189, 183, 107, 255},
-	"darkmagenta":          color.RGBA{139, 0, 139, 255},
-	"darkolivegreen":       color.RGBA{85, 107, 47, 255},
-	"darkorange":           color.RGBA{255, 140, 0, 255},
-	"darkorchid":           color.RGBA{153, 50, 204, 255},
-	"darkred":              color.RGBA{139, 0, 0, 255},
-	"darksalmon":           color.RGBA{233, 150, 122, 255},
-	"darkseagreen":         color.RGBA{143, 188, 143, 255},
-	"darkslateblue":        color.RGBA{72, 61, 139, 255},
-	"darkslategray":        color.RGBA{47, 79, 79, 255},
-	"darkslategrey":        color.RGBA{47, 79, 79, 255},
-	"darkturquoise":        color.RGBA{0, 206, 209, 255},
-	"darkviolet":           color.RGBA{148, 0, 211, 255},
-	"deeppink":             color.RGBA{255, 20, 147, 255},
-	"deepskyblue":          color.RGBA{0, 191, 255, 255},
-	"dimgray":              color.RGBA{105, 105, 105, 255},
-	"dimgrey":              color.RGBA{105, 105, 105, 255},
-	"dodgerblue":           color.RGBA{30, 144, 255, 255},
-	"firebrick":            color.RGBA{178, 34, 34, 255},
-	"floralwhite":          color.RGBA{255, 250, 240, 255},
-	"forestgreen":          color.RGBA{34, 139, 34, 255},
-	"fuchsia":              color.RGBA{255, 0, 255, 255},
-	"gainsboro":            color.RGBA{220, 220, 220, 255},
-	"ghostwhite":           color.RGBA{248, 248, 255, 255},
-	"gold":                 color.RGBA{255, 215, 0, 255},
-	"goldenrod":            color.RGBA{218, 165, 32, 255},
-	"gray":                 color.RGBA{128, 128, 128, 255},
-	"green":                color.RGBA{0, 128, 0, 255},
-	"greenyellow":          color.RGBA{173, 255, 47, 255},
-	"grey":                 color.RGBA{128, 128, 128, 255},
-	"honeydew":             color.RGBA{240, 255, 240, 255},
-	"hotpink":              color.RGBA{255, 105, 180, 255},
-	"indianred":            color.RGBA{205, 92, 92, 255},
-	"indigo":               color.RGBA{75, 0, 130, 255},
-	"ivory":                color.RGBA{255, 255, 240, 255},
-	"khaki":                color.RGBA{240, 230, 140, 255},
-	"lavender":             color.RGBA{230, 230, 250, 255},
-	"lavenderblush":        color.RGBA{255, 240, 245, 255},
-	"lawngreen":            color.RGBA{124, 252, 0, 255},
-	"lemonchiffon":         color.RGBA{255, 250, 205, 255},
-	"lightblue":            color.RGBA{173, 216, 230, 255},
-	"lightcoral":           color.RGBA{240, 128, 128, 255},
-	"lightcyan":            color.RGBA{224, 255, 255, 255},
-	"lightgoldenrodyellow": color.RGBA{250, 250, 210, 255},
-	"lightgray":            color.RGBA{211, 211, 211, 255},
-	"lightgreen":           color.RGBA{144, 238, 144, 255},
-	"lightgrey":            color.RGBA{211, 211, 211, 255},
-	"lightpink":            color.RGBA{255, 182, 193, 255},
-	"lightsalmon":          color.RGBA{255, 160, 122, 255},
-	"lightseagreen":        color.RGBA{32, 178, 170, 255},
-	"lightskyblue":         color.RGBA{135, 206, 250, 255},
-	"lightslategray":       color.RGBA{119, 136, 153, 255},
-	"lightslategrey":       color.RGBA{119, 136, 153, 255},
-	"lightsteelblue":       color.RGBA{176, 196, 222, 255},
-	"lightyellow":          color.RGBA{255, 255, 224, 255},
-	"lime":                 color.RGBA{0, 255, 0, 255},
-	"limegreen":            color.RGBA{50, 205, 50, 255},
-	"linen":                color.RGBA{250, 240, 230, 255},
-	"magenta":              color.RGBA{255, 0, 255, 255},
-	"maroon":               color.RGBA{128, 0, 0, 255},
-	"mediumaquamarine":     color.RGBA{102, 205, 170, 255},
-	"mediumblue":           color.RGBA{0, 0, 205, 255},
-	"mediumorchid":         color.RGBA{186, 85, 211, 255},
-	"mediumpurple":         color.RGBA{147, 112, 219, 255},
-	"mediumseagreen":       color.RGBA{60, 179, 113, 255},
-	"mediumslateblue":      color.RGBA{123, 104, 238, 255},
-	"mediumspringgreen":    color.RGBA{0, 250, 154, 255},
-	"mediumturquoise":      color.RGBA{72, 209, 204, 255},
-	"mediumvioletred":      color.RGBA{199, 21, 133, 255},
-	"midnightblue":         color.RGBA{25, 25, 112, 255},
-	"mintcream":            color.RGBA{245, 255, 250, 255},
-	"mistyrose":            color.RGBA{255, 228, 225, 255},
-	"moccasin":             color.RGBA{255, 228, 181, 255},
-	"navajowhite":          color.RGBA{255, 222, 173, 255},
-	"navy":                 color.RGBA{0, 0, 128, 255},
-	"oldlace":              color.RGBA{253, 245, 230, 255},
-	"olive":                color.RGBA{128, 128, 0, 255},
-	"olivedrab":            color.RGBA{107, 142, 35, 255},
-	"orange":               color.RGBA{255, 165, 0, 255},
-	"orangered":            color.RGBA{255, 69, 0, 255},
-	"orchid":               color.RGBA{218, 112, 214, 255},
-	"palegoldenrod":        color.RGBA{238, 232, 170, 255},
-	"palegreen":            color.RGBA{152, 251, 152, 255},
-	"paleturquoise":        color.RGBA{175, 238, 238, 255},
-	"palevioletred":        color.RGBA{219, 112, 147, 255},
-	"papayawhip":           color.RGBA{255, 239, 213, 255},
-	"peachpuff":            color.RGBA{255, 218, 185, 255},
-	"peru":                 color.RGBA{205, 133, 63, 255},
-	"pink":                 color.RGBA{255, 192, 203, 255},
-	"plum":                 color.RGBA{221, 160, 221, 255},
-	"powderblue":           color.RGBA{176, 224, 230, 255},
-	"purple":               color.RGBA{128, 0, 128, 255},
-	"red":                  color.RGBA{255, 0, 0, 255},
-	"rosybrown":            color.RGBA{188, 143, 143, 255},
-	"royalblue":            color.RGBA{65, 105, 225, 255},
-	"saddlebrown":          color.RGBA{139, 69, 19, 255},
-	"salmon":               color.RGBA{250, 128, 114, 255},
-	"sandybrown":           color.RGBA{244, 164, 96, 255},
-	"seagreen":             color.RGBA{46, 139, 87, 255},
-	"seashell":             color.RGBA{255, 245, 238, 255},
-	"sienna":               color.RGBA{160, 82, 45, 255},
-	"silver":               color.RGBA{192, 192, 192, 255},
-	"skyblue":              color.RGBA{135, 206, 235, 255},
-	"slateblue":            color.RGBA{106, 90, 205, 255},
-	"slategray":            color.RGBA{112, 128, 144, 255},
-	"slategrey":            color.RGBA{112, 128, 144, 255},
-	"snow":                 color.RGBA{255, 250, 250, 255},
-	"springgreen":          color.RGBA{0, 255, 127, 255},
-	"steelblue":            color.RGBA{70, 130, 180, 255},
-	"tan":                  color.RGBA{210, 180, 140, 255},
-	"teal":                 color.RGBA{0, 128, 128, 255},
-	"thistle":              color.RGBA{216, 191, 216, 255},
-	"tomato":               color.RGBA{255, 99, 71, 255},
-	"turquoise":            color.RGBA{64, 224, 208, 255},
-	"violet":               color.RGBA{238, 130, 238, 255},
-	"wheat":                color.RGBA{245, 222, 179, 255},
-	"white":                color.RGBA{255, 255, 255, 255},
-	"whitesmoke":           color.RGBA{245, 245, 245, 255},
-	"yellow":               color.RGBA{255, 255, 0, 255},
-	"yellowgreen":          color.RGBA{154, 205, 50, 255},
+	"aliceblue":            {240, 248, 255, 255},
+	"antiquewhite":         {250, 235, 215, 255},
+	"aqua":                 {0, 255, 255, 255},
+	"aquamarine":           {127, 255, 212, 255},
+	"azure":                {240, 255, 255, 255},
+	"beige":                {245, 245, 220, 255},
+	"bisque":               {255, 228, 196, 255},
+	"black":                {0, 0, 0, 255},
+	"blanchedalmond":       {255, 235, 205, 255},
+	"blue":                 {0, 0, 255, 255},
+	"blueviolet":           {138, 43, 226, 255},
+	"brown":                {165, 42, 42, 255},
+	"burlywood":            {222, 184, 135, 255},
+	"cadetblue":            {95, 158, 160, 255},
+	"chartreuse":           {127, 255, 0, 255},
+	"chocolate":            {210, 105, 30, 255},
+	"coral":                {255, 127, 80, 255},
+	"cornflowerblue":       {100, 149, 237, 255},
+	"cornsilk":             {255, 248, 220, 255},
+	"crimson":              {220, 20, 60, 255},
+	"cyan":                 {0, 255, 255, 255},
+	"darkblue":             {0, 0, 139, 255},
+	"darkcyan":             {0, 139, 139, 255},
+	"darkgoldenrod":        {184, 134, 11, 255},
+	"darkgray":             {169, 169, 169, 255},
+	"darkgreen":            {0, 100, 0, 255},
+	"darkgrey":             {169, 169, 169, 255},
+	"darkkhaki":            {189, 183, 107, 255},
+	"darkmagenta":          {139, 0, 139, 255},
+	"darkolivegreen":       {85, 107, 47, 255},
+	"darkorange":           {255, 140, 0, 255},
+	"darkorchid":           {153, 50, 204, 255},
+	"darkred":              {139, 0, 0, 255},
+	"darksalmon":           {233, 150, 122, 255},
+	"darkseagreen":         {143, 188, 143, 255},
+	"darkslateblue":        {72, 61, 139, 255},
+	"darkslategray":        {47, 79, 79, 255},
+	"darkslategrey":        {47, 79, 79, 255},
+	"darkturquoise":        {0, 206, 209, 255},
+	"darkviolet":           {148, 0, 211, 255},
+	"deeppink":             {255, 20, 147, 255},
+	"deepskyblue":          {0, 191, 255, 255},
+	"dimgray":              {105, 105, 105, 255},
+	"dimgrey":              {105, 105, 105, 255},
+	"dodgerblue":           {30, 144, 255, 255},
+	"firebrick":            {178, 34, 34, 255},
+	"floralwhite":          {255, 250, 240, 255},
+	"forestgreen":          {34, 139, 34, 255},
+	"fuchsia":              {255, 0, 255, 255},
+	"gainsboro":            {220, 220, 220, 255},
+	"ghostwhite":           {248, 248, 255, 255},
+	"gold":                 {255, 215, 0, 255},
+	"goldenrod":            {218, 165, 32, 255},
+	"gray":                 {128, 128, 128, 255},
+	"green":                {0, 128, 0, 255},
+	"greenyellow":          {173, 255, 47, 255},
+	"grey":                 {128, 128, 128, 255},
+	"honeydew":             {240, 255, 240, 255},
+	"hotpink":              {255, 105, 180, 255},
+	"indianred":            {205, 92, 92, 255},
+	"indigo":               {75, 0, 130, 255},
+	"ivory":                {255, 255, 240, 255},
+	"khaki":                {240, 230, 140, 255},
+	"lavender":             {230, 230, 250, 255},
+	"lavenderblush":        {255, 240, 245, 255},
+	"lawngreen":            {124, 252, 0, 255},
+	"lemonchiffon":         {255, 250, 205, 255},
+	"lightblue":            {173, 216, 230, 255},
+	"lightcoral":           {240, 128, 128, 255},
+	"lightcyan":            {224, 255, 255, 255},
+	"lightgoldenrodyellow": {250, 250, 210, 255},
+	"lightgray":            {211, 211, 211, 255},
+	"lightgreen":           {144, 238, 144, 255},
+	"lightgrey":            {211, 211, 211, 255},
+	"lightpink":            {255, 182, 193, 255},
+	"lightsalmon":          {255, 160, 122, 255},
+	"lightseagreen":        {32, 178, 170, 255},
+	"lightskyblue":         {135, 206, 250, 255},
+	"lightslategray":       {119, 136, 153, 255},
+	"lightslategrey":       {119, 136, 153, 255},
+	"lightsteelblue":       {176, 196, 222, 255},
+	"lightyellow":          {255, 255, 224, 255},
+	"lime":                 {0, 255, 0, 255},
+	"limegreen":            {50, 205, 50, 255},
+	"linen":                {250, 240, 230, 255},
+	"magenta":              {255, 0, 255, 255},
+	"maroon":               {128, 0, 0, 255},
+	"mediumaquamarine":     {102, 205, 170, 255},
+	"mediumblue":           {0, 0, 205, 255},
+	"mediumorchid":         {186, 85, 211, 255},
+	"mediumpurple":         {147, 112, 219, 255},
+	"mediumseagreen":       {60, 179, 113, 255},
+	"mediumslateblue":      {123, 104, 238, 255},
+	"mediumspringgreen":    {0, 250, 154, 255},
+	"mediumturquoise":      {72, 209, 204, 255},
+	"mediumvioletred":      {199, 21, 133, 255},
+	"midnightblue":         {25, 25, 112, 255},
+	"mintcream":            {245, 255, 250, 255},
+	"mistyrose":            {255, 228, 225, 255},
+	"moccasin":             {255, 228, 181, 255},
+	"navajowhite":          {255, 222, 173, 255},
+	"navy":                 {0, 0, 128, 255},
+	"oldlace":              {253, 245, 230, 255},
+	"olive":                {128, 128, 0, 255},
+	"olivedrab":            {107, 142, 35, 255},
+	"orange":               {255, 165, 0, 255},
+	"orangered":            {255, 69, 0, 255},
+	"orchid":               {218, 112, 214, 255},
+	"palegoldenrod":        {238, 232, 170, 255},
+	"palegreen":            {152, 251, 152, 255},
+	"paleturquoise":        {175, 238, 238, 255},
+	"palevioletred":        {219, 112, 147, 255},
+	"papayawhip":           {255, 239, 213, 255},
+	"peachpuff":            {255, 218, 185, 255},
+	"peru":                 {205, 133, 63, 255},
+	"pink":                 {255, 192, 203, 255},
+	"plum":                 {221, 160, 221, 255},
+	"powderblue":           {176, 224, 230, 255},
+	"purple":               {128, 0, 128, 255},
+	"red":                  {255, 0, 0, 255},
+	"rosybrown":            {188, 143, 143, 255},
+	"royalblue":            {65, 105, 225, 255},
+	"saddlebrown":          {139, 69, 19, 255},
+	"salmon":               {250, 128, 114, 255},
+	"sandybrown":           {244, 164, 96, 255},
+	"seagreen":             {46, 139, 87, 255},
+	"seashell":             {255, 245, 238, 255},
+	"sienna":               {160, 82, 45, 255},
+	"silver":               {192, 192, 192, 255},
+	"skyblue":              {135, 206, 235, 255},
+	"slateblue":            {106, 90, 205, 255},
+	"slategray":            {112, 128, 144, 255},
+	"slategrey":            {112, 128, 144, 255},
+	"snow":                 {255, 250, 250, 255},
+	"springgreen":          {0, 255, 127, 255},
+	"steelblue":            {70, 130, 180, 255},
+	"tan":                  {210, 180, 140, 255},
+	"teal":                 {0, 128, 128, 255},
+	"thistle":              {216, 191, 216, 255},
+	"tomato":               {255, 99, 71, 255},
+	"turquoise":            {64, 224, 208, 255},
+	"violet":               {238, 130, 238, 255},
+	"wheat":                {245, 222, 179, 255},
+	"white":                {255, 255, 255, 255},
+	"whitesmoke":           {245, 245, 245, 255},
+	"yellow":               {255, 255, 0, 255},
+	"yellowgreen":          {154, 205, 50, 255},
 }

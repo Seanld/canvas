@@ -124,7 +124,8 @@ type Text struct {
 	TextOrientation
 	Width, Height float64
 	Text          string
-	Overflows     bool // true if lines stick out of the box
+	OverflowsX    bool // true if lines stick out of the box (horizontally)
+	OverflowsY    bool // true if lines don't fit in the box (vertically)
 }
 
 type line struct {
@@ -369,14 +370,27 @@ func NewTextLine(face *FontFace, s string, halign TextAlign) *Text {
 			skipNext = r == '\r' && j+1 < len(s) && s[j+1] == '\n'
 		}
 	}
-	for _, line := range t.lines {
-		if 0 < len(line.spans) {
-			last := line.spans[len(line.spans)-1]
-			t.Width = math.Max(t.Width, last.X+last.Width)
+	if halign == Left {
+		for _, line := range t.lines {
+			if 0 < len(line.spans) {
+				last := line.spans[len(line.spans)-1]
+				t.Width = math.Max(t.Width, last.X+last.Width)
+			}
 		}
-	}
-	if halign == Center {
-		t.Width *= 2.0
+	} else if halign == Center {
+		for _, line := range t.lines {
+			if 0 < len(line.spans) {
+				first, last := line.spans[0], line.spans[len(line.spans)-1]
+				t.Width = math.Max(t.Width, math.Max(last.X+last.Width, -first.X))
+			}
+		}
+	} else if halign == Right {
+		for _, line := range t.lines {
+			if 0 < len(line.spans) {
+				first := line.spans[0]
+				t.Width = math.Max(t.Width, -first.X)
+			}
+		}
 	}
 	t.Height = y - spacing
 	return t
@@ -444,6 +458,23 @@ func (rt *RichText) Reset() {
 	rt.Builder.Reset()
 	rt.locs = rt.locs[:1]
 	rt.faces = rt.faces[:1]
+}
+
+func (rt *RichText) Copy() *RichText {
+	other := &RichText{
+		Builder:     &strings.Builder{},
+		locs:        append(indexer{}, rt.locs...),
+		faces:       append([]*FontFace{}, rt.faces...),
+		mode:        rt.mode,
+		orient:      rt.orient,
+		defaultFace: rt.defaultFace,
+		objects:     make(map[uint32]TextSpanObject, len(rt.objects)),
+	}
+	other.WriteString(rt.String())
+	for pos, obj := range rt.objects {
+		other.objects[pos] = obj
+	}
+	return other
 }
 
 // SetWritingMode sets the writing mode.
@@ -768,17 +799,19 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 	i, ag := 0, 0 // index into items and glyphs
 	lineSpacing := 1.0 + opts.LineStretch
 	for j := range breaks {
+		ag0 := ag
+
 		// j is the current line
 		end := breaks[j].Position + 1
-
 		lineWidth := breaks[j].Width
 		if breaks[j].Ratio < 0.0 {
 			lineWidth += breaks[j].Shrink * breaks[j].Ratio
 		} else if halign == Justify && 0.0 < breaks[j].Ratio {
 			lineWidth += breaks[j].Stretch * breaks[j].Ratio
 		}
+		t.Width = math.Max(t.Width, lineWidth)
 		if w < lineWidth {
-			t.Overflows = true
+			t.OverflowsX = true
 		}
 
 		// shift line to centre or right
@@ -791,7 +824,7 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 
 		// build text spans of line
 		line := line{}
-		merge := false
+		merge := false // merge spans
 		for i < end {
 			bg := ag
 			W, Y, Z := 0.0, 0.0, 0.0
@@ -804,31 +837,33 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 			}
 
 			// append glyphs in trailing glues or the final penalty (hyphen)
-			skip := 0
+			eol := 0 // increase in bg that is at the end-of-line: trailing whitespace
 			for i < end && items[i].Type != text.BoxType {
 				if items[i].Type == text.GlueType {
 					Y += items[i].Stretch
 					Z += items[i].Shrink
 				} else if items[i].Size != 0 {
 					// penalty with glyphs, either unused potential hyphen or used hyphen/newline, stop the loop
+					bg += eol
+					eol = 0
 					if i+1 < end {
 						// potential but unused hyphen
-					} else if glyphs[bg].Text == '\u00AD' {
+					} else if glyphs[bg].Text == "\u00AD" {
 						// hyphen
 						id := glyphs[bg].SFNT.GlyphIndex('-')
 						glyphs[bg].ID = id
 						glyphs[bg].XAdvance = int32(glyphs[bg].SFNT.GlyphAdvance(id))
-						glyphs[bg].Text = '-'
+						glyphs[bg].Text = "-"
 						bg += items[i].Size
 						W += items[i].Width
 					} else {
 						// newline
-						skip += items[i].Size
+						eol += items[i].Size
 					}
 					i++
 					break
 				}
-				bg += items[i].Size
+				eol += items[i].Size
 				W += items[i].Width
 				i++
 			}
@@ -837,8 +872,14 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 			if i < len(items) && items[i-1].Type == text.PenaltyType && items[i].Type == text.GlueType {
 				Y += items[i].Stretch
 				Z += items[i].Shrink
-				skip += items[i].Size
+				eol += items[i].Size
 				i++
+			}
+
+			// not yet at end-of-line
+			if i < end {
+				bg += eol
+				eol = 0
 			}
 
 			// [ag,bg) is the range of glyphs
@@ -876,8 +917,8 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 					if run.Direction == text.RightToLeft || run.Direction == text.BottomToTop {
 						ac = glyphs[b-1].Cluster
 					}
-					if b == bg && skip != 0 {
-						bc = glyphs[b+skip].Cluster
+					if b == bg && eol != 0 {
+						bc = glyphs[b+eol].Cluster
 					}
 					s := TextSpan{
 						X:         x,
@@ -894,6 +935,12 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 						line.spans = append(line.spans, s)
 					} else if prev := &line.spans[len(line.spans)-1]; prev.Face != s.Face || prev.Direction != s.Direction || prev.Rotation != s.Rotation || prev.Level != s.Level {
 						line.spans = append(line.spans, s)
+					} else if run.Direction == text.RightToLeft || run.Direction == text.BottomToTop {
+						// merge spans
+						prev.Width += width
+						prev.Text = log[ac:bc] + prev.Text
+						prev.Objects = append(objects, prev.Objects...)
+						prev.Glyphs = append(glyphs[a:b:b], prev.Glyphs...)
 					} else {
 						// merge spans
 						prev.Width += width
@@ -908,7 +955,7 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 				}
 			}
 
-			// stretch or shrink glues
+			// stretch or shrink glues, W is the width left after subtracting all spans
 			if breaks[j].Ratio < 0.0 {
 				x += W + Z*breaks[j].Ratio
 			} else if halign == Justify && 0.0 < breaks[j].Ratio {
@@ -918,7 +965,7 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 			} else {
 				merge = true
 			}
-			ag = bg + skip
+			ag = bg + eol
 		}
 
 		// set y position of line
@@ -934,7 +981,26 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 		bottom *= lineSpacing
 		if height != 0.0 && h < y+ascent+descent {
 			// line doesn't fit
-			t.Text = log[:glyphs[ag].Cluster]
+			n := glyphs[ag0].Cluster
+			t.Text = log[:n]
+			t.OverflowsY = true
+
+			// consume the text that fit
+			start := len([]rune(t.Text)) // first rune that doesn't fit
+			for i, loc := range rt.locs {
+				if start <= loc {
+					if 0 < i && start < loc {
+						i--
+					}
+					for j := 0; i+j < len(rt.locs); j++ {
+						rt.locs[j] = rt.locs[i+j] - start
+					}
+					rt.locs = rt.locs[:len(rt.locs)-i]
+					rt.faces = append(rt.faces[:0], rt.faces[i:]...)
+				}
+			}
+			rt.Builder.Reset()
+			rt.WriteString(log[n:])
 			break
 		}
 		line.y = y + ascent
@@ -942,6 +1008,9 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 		// add line
 		t.lines = append(t.lines, line)
 		y += ascent + bottom
+	}
+	if !t.OverflowsY {
+		rt.Reset()
 	}
 
 	// reorder from logical to visual order of text spans in line
@@ -954,6 +1023,7 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 		_, _, descent, bottom := t.lines[len(t.lines)-1].Heights(rt.mode)
 		y += -bottom*lineSpacing + descent
 	}
+	t.Height = y
 
 	// vertical align
 	if rt.mode == VerticalRL {
@@ -983,22 +1053,6 @@ func (rt *RichText) ToText(width, height float64, halign, valign TextAlign, opts
 		for j := range t.lines {
 			t.lines[j].y = h - t.lines[j].y
 		}
-	}
-
-	if width == 0.0 {
-		for _, line := range t.lines {
-			if 0 < len(line.spans) {
-				last := line.spans[len(line.spans)-1]
-				t.Width = math.Max(t.Width, last.X+last.Width)
-			}
-		}
-	} else {
-		t.Width = width
-	}
-	if height == 0.0 {
-		t.Height = y
-	} else {
-		t.Height = height
 	}
 	return t
 }

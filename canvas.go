@@ -411,23 +411,17 @@ func (c *Context) SetFill(ifill interface{}) {
 
 // SetFillColor sets the color to be used for filling operations. The default fill color is black.
 func (c *Context) SetFillColor(col color.Color) {
-	c.Style.Fill.Color = rgbaColor(col)
-	c.Style.Fill.Gradient = nil
-	c.Style.Fill.Pattern = nil
+	c.Style.Fill = Paint{Color: rgbaColor(col)}
 }
 
 // SetFillGradient sets the gradient to be used for filling operations. The default fill color is black.
 func (c *Context) SetFillGradient(gradient Gradient) {
-	c.Style.Fill.Color = Transparent
-	c.Style.Fill.Gradient = gradient
-	c.Style.Fill.Pattern = nil
+	c.Style.Fill = Paint{Gradient: gradient}
 }
 
 // SetFillPattern sets the pattern to be used for filling operations. The default fill color is black.
 func (c *Context) SetFillPattern(pattern Pattern) {
-	c.Style.Fill.Color = Transparent
-	c.Style.Fill.Gradient = nil
-	c.Style.Fill.Pattern = pattern
+	c.Style.Fill = Paint{Pattern: pattern}
 }
 
 // SetStroke sets the color, gradient, or pattern to be used for stroke operations. The default stroke color is transparent.
@@ -447,23 +441,17 @@ func (c *Context) SetStroke(istroke interface{}) {
 
 // SetStrokeColor sets the color to be used for stroking operations. The default stroke color is transparent.
 func (c *Context) SetStrokeColor(col color.Color) {
-	c.Style.Stroke.Color = rgbaColor(col)
-	c.Style.Stroke.Gradient = nil
-	c.Style.Stroke.Pattern = nil
+	c.Style.Stroke = Paint{Color: rgbaColor(col)}
 }
 
 // SetStrokeGradient sets the gradients to be used for stroking operations. The default stroke color is transparent.
 func (c *Context) SetStrokeGradient(gradient Gradient) {
-	c.Style.Stroke.Color = Transparent
-	c.Style.Stroke.Gradient = gradient
-	c.Style.Stroke.Pattern = nil
+	c.Style.Stroke = Paint{Gradient: gradient}
 }
 
 // SetStrokePattern sets the pattern to be used for stroking operations. The default stroke color is transparent.
 func (c *Context) SetStrokePattern(pattern Pattern) {
-	c.Style.Stroke.Color = Transparent
-	c.Style.Stroke.Gradient = nil
-	c.Style.Stroke.Pattern = pattern
+	c.Style.Stroke = Paint{Pattern: pattern}
 }
 
 // SetStrokeWidth sets the width in millimeters for stroking operations. The default stroke width is 1.0.
@@ -546,26 +534,32 @@ func (c *Context) Close() {
 
 // Fill fills the current path and resets the path.
 func (c *Context) Fill() {
-	stroke := c.Style.Stroke
-	c.Style.Stroke = Paint{}
-	c.DrawPath(0.0, 0.0, c.path)
-	c.Style.Stroke = stroke
-	c.path = &Path{}
+	if 0 < len(c.path.d) {
+		stroke := c.Style.Stroke
+		c.Style.Stroke = Paint{}
+		c.DrawPath(0.0, 0.0, c.path)
+		c.Style.Stroke = stroke
+		c.path = &Path{}
+	}
 }
 
 // Stroke strokes the current path and resets the path.
 func (c *Context) Stroke() {
-	fill := c.Style.Fill
-	c.Style.Fill = Paint{}
-	c.DrawPath(0.0, 0.0, c.path)
-	c.Style.Fill = fill
-	c.path = &Path{}
+	if 0 < len(c.path.d) {
+		fill := c.Style.Fill
+		c.Style.Fill = Paint{}
+		c.DrawPath(0.0, 0.0, c.path)
+		c.Style.Fill = fill
+		c.path = &Path{}
+	}
 }
 
 // FillStroke fills and then strokes the current path and resets the path.
 func (c *Context) FillStroke() {
-	c.DrawPath(0.0, 0.0, c.path)
-	c.path = &Path{}
+	if 0 < len(c.path.d) {
+		c.DrawPath(0.0, 0.0, c.path)
+		c.path = &Path{}
+	}
 }
 
 // FitImage fits an image to a rectangle using different fit strategies.
@@ -646,19 +640,8 @@ func (c *Context) DrawPath(x, y float64, paths ...*Path) {
 		return
 	}
 
-	// TODO: apply coordinate view to fill/stroke gradients/patterns
 	style := c.Style
 	m := c.CoordSystemView()
-	//if style.Fill.IsPattern() {
-	//	style.Fill.Pattern = style.Fill.Pattern.SetView(m)
-	//} else if style.Fill.IsGradient() {
-	//	style.Fill.Gradient = style.Fill.Gradient.SetView(m)
-	//}
-	//if style.Stroke.IsPattern() {
-	//	style.Stroke.Pattern = style.Stroke.Pattern.SetView(m)
-	//} else if style.Stroke.IsGradient() {
-	//	style.Stroke.Gradient = style.Stroke.Gradient.SetView(m)
-	//}
 
 	// get view
 	coord := c.coordView.Dot(Point{x, y})
@@ -809,6 +792,7 @@ func (c *Canvas) Clip(rect Rect) {
 func (c *Canvas) Fit(margin float64) {
 	rect := Rect{}
 	// TODO: slow when we have many paths (see Graph example)
+	// TODO: translate gradients
 	for _, layers := range c.layers {
 		for _, l := range layers {
 			bounds := Rect{}

@@ -636,28 +636,20 @@ func (p *Path) Offset(w float64, tolerance float64) *Path {
 		return p
 	}
 
-	positive := 0.0 < w
-	w = math.Abs(w)
-
 	q := &Path{}
+	if !FastStroke {
+		// make sure all filling paths are CCW
+		p = p.Settle(NonZero) // TODO: set/check boolean if path is settled to avoid costly and unnecessary settling
+	}
 	for _, pi := range p.Split() {
-		r := &Path{}
-		rhs, lhs := pi.offset(w, ButtCap, RoundJoin, false, tolerance)
-		if rhs == nil {
-			continue
-		} else if positive {
-			r = rhs
-		} else {
-			r = lhs
+		rhs, _ := pi.offset(w, ButtCap, RoundJoin, false, tolerance)
+		if rhs != nil {
+			q = q.Append(rhs)
 		}
-		if pi.Closed() && !FastStroke {
-			if pi.CCW() {
-				r = r.Settle(Positive)
-			} else {
-				r = r.Settle(Negative).Reverse()
-			}
-		}
-		q = q.Append(r)
+	}
+	if !FastStroke {
+		// fix overlapping and spilled parts
+		q = q.Settle(Positive)
 	}
 	return q
 }
@@ -670,41 +662,18 @@ func (p *Path) Stroke(w float64, cr Capper, jr Joiner, tolerance float64) *Path 
 	if jr == nil {
 		jr = MiterJoin
 	}
+
 	q := &Path{}
 	halfWidth := math.Abs(w) / 2.0
 	for _, pi := range p.Split() {
 		rhs, lhs := pi.offset(halfWidth, cr, jr, true, tolerance)
-		if rhs == nil {
-			continue
-		} else if lhs == nil {
-			// open path
-			if FastStroke {
-				q = q.Append(rhs)
-			} else {
-				q = q.Append(rhs.Settle(Positive))
-			}
-		} else {
-			// closed path
-			// inner path should go opposite direction to cancel the outer path
-			if pi.CCW() {
-				if FastStroke {
-					q = q.Append(rhs)
-					q = q.Append(lhs.Reverse())
-				} else {
-					q = q.Append(rhs.Settle(Positive))
-					q = q.Append(lhs.Settle(Positive).Reverse())
-				}
-			} else {
-				// outer first, then inner
-				if FastStroke {
-					q = q.Append(lhs.Reverse())
-					q = q.Append(rhs)
-				} else {
-					q = q.Append(lhs.Settle(Negative))
-					q = q.Append(rhs.Settle(Negative).Reverse())
-				}
-			}
+		if rhs != nil {
+			q = q.Append(rhs).Append(lhs.Reverse())
 		}
+	}
+	if !FastStroke {
+		// fix overlapping and spilled parts
+		q = q.Settle(Positive)
 	}
 	return q
 }

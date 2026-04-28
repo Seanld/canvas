@@ -1,5 +1,7 @@
 ![Canvas](https://raw.githubusercontent.com/tdewolff/canvas/master/resources/title/title.png)
 
+*** **FUNDING REQUIRED** *** **please contact me to support this work**
+
 [![API reference](https://img.shields.io/badge/godoc-reference-5272B4)](https://pkg.go.dev/github.com/tdewolff/canvas?tab=doc) [![User guide](https://img.shields.io/badge/user-guide-5272B4)](https://github.com/tdewolff/canvas/wiki) [![Go Report Card](https://goreportcard.com/badge/github.com/tdewolff/canvas)](https://goreportcard.com/report/github.com/tdewolff/canvas) [![Coverage Status](https://coveralls.io/repos/github/tdewolff/canvas/badge.svg?branch=master)](https://coveralls.io/github/tdewolff/canvas?branch=master)
 
 **[API documentation](https://pkg.go.dev/github.com/tdewolff/canvas?tab=doc)**
@@ -7,6 +9,8 @@
 **[User guide](https://github.com/tdewolff/canvas/wiki)**
 
 **[Live HTMLCanvas demo](https://tdewolff.github.io/canvas/examples/html-canvas/index.html)**
+
+**[Benchmarks](https://github.com/tdewolff/canvas_benchmarks)**
 
 Canvas is a common vector drawing target that can output SVG, PDF, EPS, raster images (PNG, JPG, GIF, ...), HTML Canvas through WASM, OpenGL, and Gio. It has a wide range of path manipulation functionality such as flattening, stroking and dashing implemented. Additionally, it has a text formatter and embeds and subsets fonts (TTF, OTF, WOFF, WOFF2, or EOT) or converts them to outlines. It can be considered a Cairo or node-canvas alternative in Go. See the example below in Figure 1 for an overview of the functionality.
 
@@ -20,9 +24,10 @@ Canvas is a common vector drawing target that can output SVG, PDF, EPS, raster i
 - `Path.Windings` is now `Path.WindingsAt`
 - `Path.Crossings` is now `Path.CrossingsAt`
 - `Path.Contains` is now `Path.ContainsPoint`
-
-### Sponsors
-I'm actively looking for support in the form of donations or sponsorships to keep developing this library and highly appreciate any gesture. Please see the Sponsors button in GitHub for ways to contribute, or contact me directly.
+- `Path.Flat` is now `Path.IsFlat`
+- `Path.DivideBy` is now `Path.Div`
+- `canvas.RGB` and `canvas.RGBA` now accept channel values in [0,1] and not [0,255]
+- `RichText.ToText` now consumes the fitted text, leaving remaining content for a next call. If you want to reuse the same content of a `RichText` twice, you need to copy it with `RichText.Copy`.
 
 ## State
 Whether this library is ready for production environments is up to your own judgment. In general, this library is written thoughtfully and complete, but the scope of this work is so big and the implementation can be quite complex that inevitably it must have a great amount of bugs. Effort was put in writing unit and fuzz tests so that I suspect only special use-cases will stumble into bugs, but coverage is still lacking. As time permits, work is done to flesh-out functionality, find bugs, and optimize code. Optimization could be in execution time / reducing code complexity, reducing memory footprint, or reducing the length of paths from operation.
@@ -75,7 +80,7 @@ Numerical stability refers to cases where two segments are extremely close where
 
 Correctness and performance has been tested by drawing all land masses and islands from OpenStreetMap at various scales, which is a huge input (1 GB of compressed Shape files) with extremely degenerate data (many overlapping segments, overlapping points, vertical segments, self-intersections, extremely close intersections, different contour orientations, and so on).
 
-TODO: add benchmark with other libraries
+See [Benchmarks](https://github.com/tdewolff/canvas_benchmarks) for a comparison with other libraries.
 
 See [Boolean operations](https://github.com/tdewolff/canvas/wiki/Boolean-operations) for more information.
 
@@ -92,6 +97,8 @@ Additionally, many font formats are supported (such as TTF, OTF, WOFF, WOFF2, EO
 ## Examples
 
 **[Amsterdam city centre](https://github.com/tdewolff/canvas/tree/master/examples/amsterdam-centre)**: the centre of Amsterdam is drawn from data loaded from the Open Street Map API.
+
+**[Chile over Europe](https://github.com/tdewolff/canvas/tree/master/examples/chile)**: the size of Chile overlaying Europe in their respective UTM projections.
 
 **[Mauna-Loa CO2 concentration](https://github.com/tdewolff/canvas/tree/master/examples/co2-mauna-loa)**: using data from the Mauna-Loa observatory, carbon dioxide concentrations over time are drawn
 
@@ -117,8 +124,11 @@ This is a non-exhaustive list of library users I've come across. PRs are welcome
 
 - https://github.com/aldernero/gaul (generative art utility library)
 - https://github.com/aldernero/sketchy (generative art framework)
+- https://github.com/aldernero/spider (spider/radar chart generator)
+- https://github.com/BrowserJam/jam001/tree/master/jamierocks (a browser!)
 - https://github.com/carbocation/genomisc (genomics tools)
-- https://github.com/davidhampgonsalves/life-dashboard (show text and emoticons in Kindle)
+- https://github.com/Dadido3/noita-mapcap (Noita map renderer)
+- https://github.com/davidhampgonsalves/Life-Dashboard (show text and emoticons in Kindle)
 - https://github.com/davidhampgonsalves/quickdraw (grid of Google Quick Draw Drawings)
 - https://github.com/dotaspirit/dotaspirit (draw Dota match data: https://vk.com/rsltdtk)
 - https://github.com/engelsjk/go-annular (generative art of annular rings)
@@ -136,6 +146,7 @@ This is a non-exhaustive list of library users I've come across. PRs are welcome
 - https://github.com/peteraba/roadmapper (tracking roadmaps: https://rdmp.app/)
 - https://github.com/Preston-PLB/choRenderer (render chord charts in propresenter7)
 - https://github.com/stv0g/vand (camper/van monitor and control)
+- https://github.com/thomscoder/pandora (toy browser)
 - https://github.com/uncopied/chirograph (barcode security for art)
 - https://github.com/uncopied/go-qrcode (QR code encoder)
 - https://github.com/wisepythagoras/gis-utils (GIS utilities)

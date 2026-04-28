@@ -42,7 +42,7 @@ type SVG struct {
 	fonts         map[*canvas.Font]bool
 	fontSubset    map[*canvas.Font]*canvas.FontSubsetter
 	maskID        int
-	patterns      map[canvas.Gradient]string
+	defs          map[any][2]string
 	classes       []string
 	customStyle   string
 	opts          *Options
@@ -69,56 +69,57 @@ func New(w io.Writer, width, height float64, opts *Options) *SVG {
 		height:     height,
 		fonts:      map[*canvas.Font]bool{},
 		fontSubset: map[*canvas.Font]*canvas.FontSubsetter{},
-		patterns:   map[canvas.Gradient]string{},
+		defs:       map[any][2]string{},
 		opts:       opts,
 	}
 }
 
 // Close finished and closes the SVG.
 func (r *SVG) Close() error {
-	if r.opts.EmbedFonts {
-		r.writeFonts()
+	if 0 < len(r.defs) {
+		for _, v := range r.defs {
+			fmt.Fprintf(r.w, "<defs>%s</defs>", v[1])
+		}
 	}
-	if r.customStyle != "" {
-		fmt.Fprintf(r.w, "<style>%s</style>", html.EscapeString(r.customStyle))
+	if r.customStyle != "" || r.opts.EmbedFonts && 0 < len(r.fonts) {
+		fmt.Fprintf(r.w, "<style>")
+		if r.customStyle != "" {
+			fmt.Fprintf(r.w, "%s\n", html.EscapeString(r.customStyle))
+		}
+		if r.opts.EmbedFonts && 0 < len(r.fonts) {
+			for f := range r.fonts {
+				sfnt := f.SFNT
+				if r.opts.SubsetFonts {
+					glyphIDs := r.fontSubset[f].List()
+					sfntSubset, err := sfnt.Subset(glyphIDs, font.SubsetOptions{Tables: font.KeepMinTables})
+					if err == nil {
+						//	// TODO: report error?
+						sfnt = sfntSubset
+					}
+				}
+				fontProgram := sfnt.Write()
+
+				fmt.Fprintf(r.w, "\n@font-face{font-family:'%s'", f.Name())
+				if f.Style().Weight() != canvas.FontRegular {
+					fmt.Fprintf(r.w, ";font-weight:%d", f.Style().CSS())
+				}
+				if f.Style().Italic() {
+					fmt.Fprintf(r.w, ";font-style:italic")
+				}
+				fmt.Fprintf(r.w, ";src:url('data:type/opentype;base64,")
+				encoder := base64.NewEncoder(base64.StdEncoding, r.w)
+				encoder.Write(fontProgram)
+				encoder.Close()
+				fmt.Fprintf(r.w, "');}")
+			}
+		}
+		fmt.Fprintf(r.w, "\n</style>")
 	}
 	_, err := fmt.Fprintf(r.w, "</svg>")
 	if r.opts.Compression != 0 {
 		r.w.(*gzip.Writer).Close() // does not close underlying writer
 	}
 	return err
-}
-
-func (r *SVG) writeFonts() {
-	if 0 < len(r.fonts) {
-		fmt.Fprintf(r.w, "<style>")
-		for f := range r.fonts {
-			sfnt := f.SFNT
-			if r.opts.SubsetFonts {
-				glyphIDs := r.fontSubset[f].List()
-				sfntSubset, err := sfnt.Subset(glyphIDs, font.SubsetOptions{Tables: font.KeepMinTables})
-				if err == nil {
-					//	// TODO: report error?
-					sfnt = sfntSubset
-				}
-			}
-			fontProgram := sfnt.Write()
-
-			fmt.Fprintf(r.w, "\n@font-face{font-family:'%s'", f.Name())
-			if f.Style().Weight() != canvas.FontRegular {
-				fmt.Fprintf(r.w, ";font-weight:%d", f.Style().CSS())
-			}
-			if f.Style().Italic() {
-				fmt.Fprintf(r.w, ";font-style:italic")
-			}
-			fmt.Fprintf(r.w, ";src:url('data:type/opentype;base64,")
-			encoder := base64.NewEncoder(base64.StdEncoding, r.w)
-			encoder.Write(fontProgram)
-			encoder.Close()
-			fmt.Fprintf(r.w, "');}")
-		}
-		fmt.Fprintf(r.w, "\n</style>")
-	}
 }
 
 func (r *SVG) writeClasses(w io.Writer) {
@@ -172,12 +173,8 @@ func (r *SVG) Size() (float64, float64) {
 
 // RenderPath renders a path to the canvas using a style and a transformation matrix.
 func (r *SVG) RenderPath(path *canvas.Path, style canvas.Style, m canvas.Matrix) {
-	if style.HasFill() && style.Fill.IsGradient() {
-		r.getPattern(style.Fill.Gradient)
-	}
-	if style.HasStroke() && style.Stroke.IsGradient() {
-		r.getPattern(style.Stroke.Gradient)
-	}
+	fillPaint := r.writePaint(style.Fill, m)
+	strokePaint := r.writePaint(style.Stroke, m)
 
 	stroke := path
 	path = path.Copy().Transform(canvas.Identity.ReflectYAbout(r.height / 2.0).Mul(m))
@@ -206,8 +203,7 @@ func (r *SVG) RenderPath(path *canvas.Path, style canvas.Style, m canvas.Matrix)
 	if !style.HasStroke() {
 		if style.HasFill() {
 			if !style.Fill.IsColor() || style.Fill.Color != canvas.Black {
-				fmt.Fprintf(r.w, `" fill="`)
-				r.writePaint(r.w, style.Fill)
+				fmt.Fprintf(r.w, `" fill="%v`, fillPaint)
 			}
 			if style.FillRule == canvas.EvenOdd {
 				fmt.Fprintf(r.w, `" fill-rule="evenodd`)
@@ -219,8 +215,7 @@ func (r *SVG) RenderPath(path *canvas.Path, style canvas.Style, m canvas.Matrix)
 		b := &strings.Builder{}
 		if style.HasFill() {
 			if !style.Fill.IsColor() || style.Fill.Color != canvas.Black {
-				fmt.Fprintf(b, ";fill:")
-				r.writePaint(b, style.Fill)
+				fmt.Fprintf(b, ";fill:%v", fillPaint)
 			}
 			if style.FillRule == canvas.EvenOdd {
 				fmt.Fprintf(b, ";fill-rule:evenodd")
@@ -229,8 +224,7 @@ func (r *SVG) RenderPath(path *canvas.Path, style canvas.Style, m canvas.Matrix)
 			fmt.Fprintf(b, ";fill:none")
 		}
 		if style.HasStroke() && !strokeUnsupported {
-			fmt.Fprintf(b, `;stroke:`)
-			r.writePaint(b, style.Stroke)
+			fmt.Fprintf(b, `;stroke:%v`, strokePaint)
 			if style.StrokeWidth != 1.0 {
 				fmt.Fprintf(b, ";stroke-width:%v", dec(style.StrokeWidth))
 			}
@@ -285,8 +279,7 @@ func (r *SVG) RenderPath(path *canvas.Path, style canvas.Style, m canvas.Matrix)
 		stroke = stroke.Transform(canvas.Identity.ReflectYAbout(r.height / 2.0).Mul(m))
 		fmt.Fprintf(r.w, `<path d="%s`, stroke.ToSVG())
 		if !style.Stroke.IsColor() || style.Stroke.Color != canvas.Black {
-			fmt.Fprintf(r.w, `" fill="`)
-			r.writePaint(r.w, style.Stroke)
+			fmt.Fprintf(r.w, `" fill="%v`, strokePaint)
 		}
 		if style.FillRule == canvas.EvenOdd {
 			fmt.Fprintf(r.w, `" fill-rule="evenodd`)
@@ -296,7 +289,7 @@ func (r *SVG) RenderPath(path *canvas.Path, style canvas.Style, m canvas.Matrix)
 	}
 }
 
-func (r *SVG) writeFontStyle(face, faceMain *canvas.FontFace, rtl bool) {
+func (r *SVG) writeFontStyle(face, faceMain *canvas.FontFace, rtl bool, fill string) {
 	differences := 0
 	boldness := face.Style.CSS()
 	if face.Style&canvas.FontItalic != faceMain.Style&canvas.FontItalic {
@@ -337,15 +330,13 @@ func (r *SVG) writeFontStyle(face, faceMain *canvas.FontFace, rtl bool) {
 		buf.WriteTo(r.w)
 
 		if !face.Fill.Equal(faceMain.Fill) {
-			fmt.Fprintf(r.w, `;fill:`)
-			r.writePaint(r.w, face.Fill)
+			fmt.Fprintf(r.w, `;fill:%v`, fill)
 		}
 		if rtl {
 			fmt.Fprintf(r.w, `;direction:rtl`)
 		}
 	} else if differences == 1 && !face.Fill.Equal(faceMain.Fill) {
-		fmt.Fprintf(r.w, `" fill="`)
-		r.writePaint(r.w, face.Fill)
+		fmt.Fprintf(r.w, `" fill="%v`, fill)
 	} else if 0 < differences {
 		fmt.Fprintf(r.w, `" style="`)
 		buf := &bytes.Buffer{}
@@ -361,8 +352,7 @@ func (r *SVG) writeFontStyle(face, faceMain *canvas.FontFace, rtl bool) {
 			fmt.Fprintf(buf, `;font-variant:normal`)
 		}
 		if !face.Fill.Equal(faceMain.Fill) {
-			fmt.Fprintf(buf, `;fill:`)
-			r.writePaint(r.w, face.Fill)
+			fmt.Fprintf(buf, `;fill:%v`, fill)
 		}
 		if rtl {
 			fmt.Fprintf(r.w, `;direction:rtl`)
@@ -413,8 +403,7 @@ func (r *SVG) RenderText(text *canvas.Text, m canvas.Matrix) {
 	}
 	fmt.Fprintf(r.w, ` %vpx %s`, num(faceMain.Size), faceMain.Name())
 	if !faceMain.Fill.IsColor() || faceMain.Fill.Color != canvas.Black {
-		fmt.Fprintf(r.w, `;fill:`)
-		r.writePaint(r.w, faceMain.Fill)
+		fmt.Fprintf(r.w, `;fill:%v`, r.writePaint(faceMain.Fill, m))
 	}
 	if text.WritingMode != canvas.HorizontalTB {
 		if text.WritingMode == canvas.VerticalLR {
@@ -448,7 +437,7 @@ func (r *SVG) RenderText(text *canvas.Text, m canvas.Matrix) {
 				x += span.Width
 			}
 			fmt.Fprintf(r.w, `<tspan x="%v" y="%v`, num(x), num(y))
-			r.writeFontStyle(span.Face, faceMain, span.Direction == canvasText.RightToLeft)
+			r.writeFontStyle(span.Face, faceMain, span.Direction == canvasText.RightToLeft, r.writePaint(span.Face.Fill, m))
 			r.writeClasses(r.w)
 			fmt.Fprintf(r.w, `">`)
 			xml.EscapeText(r.w, []byte(span.Text))
@@ -561,38 +550,54 @@ func splitImageAlphaChannel(img image.Image) (image.Image, image.Image) {
 	return opaque, mask
 }
 
-func (r *SVG) getPattern(gradient canvas.Gradient) string {
-	if ref, ok := r.patterns[gradient]; ok {
-		return ref
-	}
-
-	ref := fmt.Sprintf("p%v", len(r.patterns)+1)
-	r.patterns[gradient] = ref
-
-	fmt.Fprintf(r.w, `<defs>`)
-	if linearGradient, ok := gradient.(*canvas.LinearGradient); ok {
-		fmt.Fprintf(r.w, `<linearGradient id="%v" gradientUnits="userSpaceOnUse" x1="%v" y1="%v" x2="%v" y2="%v">`, ref, dec(linearGradient.Start.X), dec(r.height-linearGradient.Start.Y), dec(linearGradient.End.X), dec(r.height-linearGradient.End.Y))
-		for _, stop := range linearGradient.Stops {
-			fmt.Fprintf(r.w, `<stop offset="%v" stop-color="%v"/>`, dec(stop.Offset), canvas.CSSColor(stop.Color))
-		}
-		fmt.Fprintf(r.w, `</linearGradient>`)
-	} else if radialGradient, ok := gradient.(*canvas.RadialGradient); ok {
-		fmt.Fprintf(r.w, `<radialGradient id="%v" gradientUnits="userSpaceOnUse" fx="%v" fy="%v" fr="%v" cx="%v" cy="%v" r="%v">`, ref, dec(radialGradient.C0.X), dec(r.height-radialGradient.C0.Y), dec(radialGradient.R0), dec(radialGradient.C1.X), dec(r.height-radialGradient.C1.Y), dec(radialGradient.R1))
-		for _, stop := range radialGradient.Stops {
-			fmt.Fprintf(r.w, `<stop offset="%v" stop-color="%v"/>`, dec(stop.Offset), canvas.CSSColor(stop.Color))
-		}
-		fmt.Fprintf(r.w, `</radialGradient>`)
-	}
-	fmt.Fprintf(r.w, `</defs>`)
-	return ref
-}
-
-func (r *SVG) writePaint(w io.Writer, paint canvas.Paint) {
+func (r *SVG) writePaint(paint canvas.Paint, m canvas.Matrix) string {
 	if paint.IsPattern() {
 		// TODO
+		return ""
 	} else if paint.IsGradient() {
-		fmt.Fprintf(w, "url(#%v)", r.getPattern(paint.Gradient))
+		var def string
+		ref := fmt.Sprintf("d%v", len(r.defs))
+		if v, ok := r.defs[[2]any{paint.Gradient, m}]; ok {
+			return fmt.Sprintf("url(#%v)", v[0])
+		} else if linearGradient, ok := paint.Gradient.(*canvas.LinearGradient); ok {
+			sb := strings.Builder{}
+			if m.IsSimilarity() {
+				start := m.Dot(linearGradient.Start)
+				end := m.Dot(linearGradient.End)
+				fmt.Fprintf(&sb, `<linearGradient id="%v" gradientUnits="userSpaceOnUse" x1="%v" y1="%v" x2="%v" y2="%v">`, ref, dec(start.X), dec(r.height-start.Y), dec(end.X), dec(r.height-end.Y))
+			} else {
+				// negate the Y coordinates because ToSVG(r.height) applies Y-axis reflection in its translation component,
+				// so negating the gradient coordinates cancels out the double Y-axis reflection to achieve correct positioning.
+				fmt.Fprintf(&sb, `<linearGradient id="%v" gradientUnits="userSpaceOnUse" gradientTransform="%v" x1="%v" y1="%v" x2="%v" y2="%v">`, ref, m.ToSVG(r.height), dec(linearGradient.Start.X), -dec(linearGradient.Start.Y), dec(linearGradient.End.X), -dec(linearGradient.End.Y))
+			}
+			for _, stop := range linearGradient.Grad {
+				fmt.Fprintf(&sb, `<stop offset="%v" stop-color="%v"/>`, dec(stop.Offset), canvas.CSSColor(stop.Color))
+			}
+			fmt.Fprintf(&sb, `</linearGradient>`)
+			def = sb.String()
+		} else if radialGradient, ok := paint.Gradient.(*canvas.RadialGradient); ok {
+			sb := strings.Builder{}
+			if m.IsSimilarity() {
+				c0 := m.Dot(radialGradient.C0)
+				c1 := m.Dot(radialGradient.C1)
+				scale := math.Sqrt(math.Abs(m.Det()))
+				r0 := scale * radialGradient.R0
+				r1 := scale * radialGradient.R1
+				fmt.Fprintf(&sb, `<radialGradient id="%v" gradientUnits="userSpaceOnUse" fx="%v" fy="%v" fr="%v" cx="%v" cy="%v" r="%v">`, ref, dec(c0.X), dec(r.height-c0.Y), dec(r0), dec(c1.X), dec(r.height-c1.Y), dec(r1))
+			} else {
+				// negate the Y coordinates because ToSVG(r.height) applies Y-axis reflection in its translation component,
+				// so negating the gradient coordinates cancels out the double Y-axis reflection to achieve correct positioning.
+				fmt.Fprintf(&sb, `<radialGradient id="%v" gradientUnits="userSpaceOnUse" gradientTransform="%v" fx="%v" fy="%v" fr="%v" cx="%v" cy="%v" r="%v">`, ref, m.ToSVG(r.height), dec(radialGradient.C0.X), -dec(radialGradient.C0.Y), dec(radialGradient.R0), dec(radialGradient.C1.X), -dec(radialGradient.C1.Y), dec(radialGradient.R1))
+			}
+			for _, stop := range radialGradient.Grad {
+				fmt.Fprintf(&sb, `<stop offset="%v" stop-color="%v"/>`, dec(stop.Offset), canvas.CSSColor(stop.Color))
+			}
+			fmt.Fprintf(&sb, `</radialGradient>`)
+			def = sb.String()
+		}
+		r.defs[[2]any{paint.Gradient, m}] = [2]string{ref, def}
+		return fmt.Sprintf("url(#%v)", ref)
 	} else {
-		fmt.Fprintf(w, "%v", canvas.CSSColor(paint.Color))
+		return fmt.Sprintf("%v", canvas.CSSColor(paint.Color))
 	}
 }

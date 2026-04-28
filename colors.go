@@ -3,25 +3,36 @@ package canvas
 import (
 	"image/color"
 	"math"
+	"slices"
 )
 
-// RGB returns a color given by red, green, and blue ∈ [0,255].
-func RGB(r, g, b uint8) color.RGBA {
+// RGB returns a color given by red, green, and blue ∈ [0,1].
+func RGB(r, g, b float64) color.RGBA {
 	return color.RGBA{
-		uint8(float64(r)),
-		uint8(float64(g)),
-		uint8(float64(b)),
+		uint8(r * 255.0),
+		uint8(g * 255.0),
+		uint8(b * 255.0),
 		uint8(255.0),
 	}
 }
 
-// RGBA returns a color given by red, green, and blue ∈ [0,255] (non alpha premultiplied) and alpha ∈ [0,1].
-func RGBA(r, g, b uint8, a float64) color.RGBA {
+// RGBA returns a color given by red, green, blue, and alpha ∈ [0,1] (non alpha premultiplied).
+func RGBA(r, g, b, a float64) color.RGBA {
 	return color.RGBA{
-		uint8(a * float64(r)),
-		uint8(a * float64(g)),
-		uint8(a * float64(b)),
+		uint8(a * r * 255.0),
+		uint8(a * g * 255.0),
+		uint8(a * b * 255.0),
 		uint8(a * 255.0),
+	}
+}
+
+func ToOpacity(col color.Color, a float64) color.RGBA {
+	R, G, B, A := col.RGBA()
+	return color.RGBA{
+		R: uint8(float64(R) / float64(A) * a * 255.0),
+		G: uint8(float64(G) / float64(A) * a * 255.0),
+		B: uint8(float64(B) / float64(A) * a * 255.0),
+		A: uint8(a * 255.0),
 	}
 }
 
@@ -66,7 +77,6 @@ func Hex(s string) color.RGBA {
 
 // Gradient is a gradient pattern for filling.
 type Gradient interface {
-	SetView(Matrix) Gradient
 	SetColorSpace(ColorSpace) Gradient
 	At(float64, float64) color.RGBA
 }
@@ -77,42 +87,68 @@ type Stop struct {
 	Color  color.RGBA
 }
 
-// Stops are the colors and offsets for gradient patterns, sorted by offset.
-type Stops []Stop
+// Grad are the colors and offsets for gradient patterns, sorted by offset.
+type Grad []Stop
+
+func NewGradient() Grad {
+	return Grad{}
+}
 
 // Add adds a new color stop to a gradient.
-func (stops *Stops) Add(t float64, color color.RGBA) {
-	stop := Stop{math.Min(math.Max(t, 0.0), 1.0), color}
+func (g *Grad) Add(t float64, color color.RGBA) {
+	stop := Stop{math.Min(math.Max(t, 0.0), 1.0), rgbaColor(color)}
 	// insert or replace stop and keep sort order
-	for i := range *stops {
-		if Equal((*stops)[i].Offset, stop.Offset) {
-			(*stops)[i] = stop
+	for i := range *g {
+		if Equal((*g)[i].Offset, stop.Offset) {
+			(*g)[i] = stop
 			return
-		} else if stop.Offset < (*stops)[i].Offset {
-			*stops = append((*stops)[:i], append(Stops{stop}, (*stops)[i:]...)...)
+		} else if stop.Offset < (*g)[i].Offset {
+			*g = append((*g)[:i], append(Grad{stop}, (*g)[i:]...)...)
 			return
 		}
 	}
-	*stops = append(*stops, stop)
+	*g = append(*g, stop)
 }
 
 // At returns the color at position t ∈ [0,1].
-func (stops Stops) At(t float64) color.RGBA {
-	if len(stops) == 0 {
+func (g Grad) At(t float64) color.RGBA {
+	if len(g) == 0 {
 		return Transparent
-	} else if len(stops) == 1 || t <= stops[0].Offset {
-		return stops[0].Color
-	} else if stops[len(stops)-1].Offset <= t {
-		return stops[len(stops)-1].Color
+	} else if len(g) == 1 || t <= g[0].Offset {
+		return g[0].Color
+	} else if g[len(g)-1].Offset <= t {
+		return g[len(g)-1].Color
 	}
-	for i, after := range stops[1:] {
+	for i, after := range g[1:] {
 		if t < after.Offset {
-			before := stops[i]
+			before := g[i]
 			t = (t - before.Offset) / (after.Offset - before.Offset)
 			return colorLerp(before.Color, after.Color, t)
 		}
 	}
-	return stops[len(stops)-1].Color
+	return g[len(g)-1].Color
+}
+
+func (g Grad) ToLinear(start, end Point) *LinearGradient {
+	grad := NewLinearGradient(start, end)
+	grad.Grad = g
+	return grad
+}
+
+func (g Grad) ToRadial(c0 Point, r0 float64, c1 Point, r1 float64) *RadialGradient {
+	grad := NewRadialGradient(c0, r0, c1, r1)
+	grad.Grad = g
+	return grad
+}
+
+func (g Grad) SetColorSpace(colorSpace ColorSpace) {
+	if _, ok := colorSpace.(LinearColorSpace); ok {
+		return
+	}
+	g = slices.Clone(g)
+	for i := range g {
+		g[i].Color = colorSpace.ToLinear(g[i].Color)
+	}
 }
 
 func colorLerp(c0, c1 color.RGBA, t float64) color.RGBA {
@@ -133,11 +169,10 @@ func lerp(a, b, t uint32) uint8 {
 
 // LinearGradient is a linear gradient pattern between the given start and end points. The color at offset 0 corresponds to the start position, and offset 1 to the end position. Start and end points are in the canvas's coordinate system.
 type LinearGradient struct {
+	Grad
 	Start, End Point
-	Stops
-
-	d  Point
-	d2 float64
+	d          Point
+	d2         float64
 }
 
 // NewLinearGradient returns a new linear gradient pattern.
@@ -146,63 +181,40 @@ func NewLinearGradient(start, end Point) *LinearGradient {
 	return &LinearGradient{
 		Start: start,
 		End:   end,
-
-		d:  d,
-		d2: d.Dot(d),
+		d:     d,
+		d2:    d.Dot(d),
 	}
-}
-
-// SetView sets the view. Automatically called by Canvas for coordinate system transformations.
-func (g *LinearGradient) SetView(view Matrix) Gradient {
-	if view == Identity {
-		return g
-	}
-
-	gradient := *g
-	gradient.Start = view.Dot(gradient.Start)
-	gradient.End = view.Dot(gradient.End)
-	gradient.d = gradient.End.Sub(gradient.Start)
-	gradient.d2 = gradient.d.Dot(gradient.d)
-	return &gradient
 }
 
 // SetColorSpace sets the color space. Automatically called by the rasterizer.
 func (g *LinearGradient) SetColorSpace(colorSpace ColorSpace) Gradient {
-	if _, ok := colorSpace.(LinearColorSpace); ok {
-		return g
-	}
-
-	gradient := *g
-	for i := range gradient.Stops {
-		gradient.Stops[i].Color = colorSpace.ToLinear(gradient.Stops[i].Color)
-	}
-	return &gradient
+	g.Grad.SetColorSpace(colorSpace)
+	return g
 }
 
 // At returns the color at position (x,y).
 func (g *LinearGradient) At(x, y float64) color.RGBA {
-	if len(g.Stops) == 0 {
+	if len(g.Grad) == 0 {
 		return Transparent
 	}
 
 	p := Point{x, y}.Sub(g.Start)
 	if Equal(g.d.Y, 0.0) && !Equal(g.d.X, 0.0) {
-		return g.Stops.At(p.X / g.d.X) // horizontal
+		return g.Grad.At(p.X / g.d.X) // horizontal
 	} else if !Equal(g.d.Y, 0.0) && Equal(g.d.X, 0.0) {
-		return g.Stops.At(p.Y / g.d.Y) // vertical
+		return g.Grad.At(p.Y / g.d.Y) // vertical
 	}
 	t := p.Dot(g.d) / g.d2
-	return g.Stops.At(t)
+	return g.Grad.At(t)
 }
 
 // RadialGradient is a radial gradient pattern between two circles defined by their center points and radii. Color stop at offset 0 corresponds to the first circle and offset 1 to the second circle.
 type RadialGradient struct {
+	Grad
 	C0, C1 Point
 	R0, R1 float64
-	Stops
-
-	cd    Point
-	dr, a float64
+	cd     Point
+	dr, a  float64
 }
 
 // NewRadialGradient returns a new radial gradient pattern.
@@ -214,43 +226,21 @@ func NewRadialGradient(c0 Point, r0 float64, c1 Point, r1 float64) *RadialGradie
 		R0: r0,
 		C1: c1,
 		R1: r1,
-
 		cd: cd,
 		dr: dr,
 		a:  cd.Dot(cd) - dr*dr,
 	}
 }
 
-// SetView sets the view. Automatically called by Canvas for coordinate system transformations.
-func (g *RadialGradient) SetView(view Matrix) Gradient {
-	if view == Identity {
-		return g
-	}
-
-	gradient := *g
-	gradient.C0 = view.Dot(gradient.C0)
-	gradient.C1 = view.Dot(gradient.C1)
-	gradient.cd = gradient.C1.Sub(gradient.C0)
-	gradient.a = gradient.cd.Dot(gradient.cd) - gradient.dr*gradient.dr
-	return &gradient
-}
-
 // SetColorSpace sets the color space. Automatically called by the rasterizer.
 func (g *RadialGradient) SetColorSpace(colorSpace ColorSpace) Gradient {
-	if _, ok := colorSpace.(LinearColorSpace); ok {
-		return g
-	}
-
-	gradient := *g
-	for i := range gradient.Stops {
-		gradient.Stops[i].Color = colorSpace.ToLinear(gradient.Stops[i].Color)
-	}
-	return &gradient
+	g.Grad.SetColorSpace(colorSpace)
+	return g
 }
 
 // At returns the color at position (x,y).
 func (g *RadialGradient) At(x, y float64) color.RGBA {
-	if len(g.Stops) == 0 {
+	if len(g.Grad) == 0 {
 		return Transparent
 	}
 
@@ -260,77 +250,28 @@ func (g *RadialGradient) At(x, y float64) color.RGBA {
 	b := pd.Dot(g.cd) + g.R0*g.dr
 	c := pd.Dot(pd) - g.R0*g.R0
 	t0, t1 := solveQuadraticFormula(g.a, -2.0*b, c)
-	if !math.IsNaN(t1) {
-		return g.Stops.At(t1)
-	} else if !math.IsNaN(t0) {
-		return g.Stops.At(t0)
-	}
-	return Transparent
-}
 
-// ImagePattern is an image tiling pattern of an image drawn from an origin with a certain resolution. Higher resolution will give smaller tilings.
-//type ImagePattern struct {
-//	img    *image.RGBA
-//	res    Resolution
-//	origin Point
-//}
-//
-//// NewImagePattern returns a new image pattern.
-//func NewImagePattern(iimg image.Image, res Resolution, origin Point) *ImagePattern {
-//	img, ok := iimg.(*image.RGBA)
-//	if !ok {
-//		bounds := iimg.Bounds()
-//		img = image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
-//		draw.Draw(img, img.Bounds(), iimg, bounds.Min, draw.Src)
-//	}
-//	return &ImagePattern{
-//		img:    img,
-//		res:    res,
-//		origin: origin,
-//	}
-//}
-//
-//// SetColorSpace returns the linear gradient with the given color space. Automatically called by the rasterizer.
-//func (p *ImagePattern) SetColorSpace(colorSpace ColorSpace) Pattern {
-//	if _, ok := colorSpace.(LinearColorSpace); ok {
-//		return p
-//	}
-//	// TODO: optimize
-//	pattern := *p
-//	bounds := p.img.Bounds()
-//	pattern.img = image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
-//	draw.Draw(pattern.img, pattern.img.Bounds(), p.img, bounds.Min, draw.Src)
-//	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-//		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-//			col := pattern.img.RGBAAt(x, y)
-//			col = colorSpace.ToLinear(col)
-//			pattern.img.SetRGBA(x, y, col)
-//		}
-//	}
-//	return &pattern
-//}
-//
-//// At returns the color at position (x,y).
-//func (p *ImagePattern) At(x, y float64) color.RGBA {
-//	x = (x - p.origin.X) * p.res.DPMM()
-//	y = (y - p.origin.Y) * p.res.DPMM()
-//
-//	var s [4]uint8
-//	ix0, iy0 := int(x), int(y)
-//	fx, fy := x-float64(ix0), y-float64(iy0)
-//	ix0 = ix0 % p.img.Bounds().Dx()
-//	iy0 = iy0 % p.img.Bounds().Dy()
-//	ix1 := (ix0 + 1) % p.img.Bounds().Dx()
-//	iy1 := (iy0 + 1) % p.img.Bounds().Dy()
-//	d00 := p.img.PixOffset(ix0, iy0)
-//	d10 := p.img.PixOffset(ix1, iy0)
-//	d01 := p.img.PixOffset(ix0, iy1)
-//	d11 := p.img.PixOffset(ix1, iy1)
-//	for i := 0; i < 4; i++ {
-//		s[i] = uint8((1.0-fy)*((1.0-fx)*float64(p.img.Pix[d00+i])+fx*float64(p.img.Pix[d10+i])) + fy*((1.0-fx)*float64(p.img.Pix[d01+i])+fx*float64(p.img.Pix[d11+i])) + 0.5)
-//	}
-//	return color.RGBA{s[0], s[1], s[2], s[3]}
-//}
+	valid := func(t float64) bool {
+		return !math.IsNaN(t) && t >= 0 && t <= 1 && g.R0+g.dr*t >= 0
+	}
+	hasPositive := func(t float64) bool {
+		return !math.IsNaN(t) && t > 0 && g.R0+g.dr*t >= 0
+	}
+
+	// Pick the largest valid t (t1 >= t0 from solveQuadraticFormula).
+	if valid(t1) {
+		return g.Grad.At(t1)
+	}
+	if valid(t0) {
+		return g.Grad.At(t0)
+	}
+
+	// No valid t in [0,1]. Extend boundary colors.
+	if hasPositive(t0) || hasPositive(t1) {
+		return g.Grad.At(1)
+	}
+	return g.Grad.At(0)
+}
 
 // ColorSpace defines the color space within the RGB color model. All colors passed to this library are assumed to be in the sRGB color space, which is a ubiquitous assumption in most software. This works great for most applications, but fails when blending semi-transparent layers. See an elaborate explanation at https://blog.johnnovak.net/2016/09/21/what-every-coder-should-know-about-gamma/, which goes into depth of the problems of using sRGB for blending and the need for gamma correction. In short, we need to transform the colors, which are in the sRGB color space, to the linear color space, perform blending, and then transform them back to the sRGB color space.
 // Unfortunately, almost all software does blending the wrong way (all PDF renderers and browsers I've tested), so by default this library will do the same by using LinearColorSpace which does no conversion from sRGB to linear and back but blends directly in sRGB. Or in other words, it assumes that colors are given in the linear color space and that the output image is expected to be in the linear color space as well. For technical correctness we should really be using the SRGBColorSpace, which will convert from sRGB to linear space, do blending in linear space, and then go back to sRGB space.

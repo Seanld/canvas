@@ -285,6 +285,9 @@ func (p *Path) CopyTo(q *Path) *Path {
 
 // Len returns the number of segments.
 func (p *Path) Len() int {
+	if p == nil {
+		return 0
+	}
 	n := 0
 	for i := 0; i < len(p.d); {
 		i += cmdLen(p.d[i])
@@ -567,9 +570,11 @@ func (p *Path) Close() {
 
 	end := p.StartPos()
 	if p.d[len(p.d)-1] == LineToCmd && Equal(p.d[len(p.d)-3], end.X) && Equal(p.d[len(p.d)-2], end.Y) {
-		// replace LineTo by Close if equal
-		p.d[len(p.d)-1] = CloseCmd
+		// replace LineTo by Close if equal (replace coordinates to ensure they match exactly)
 		p.d[len(p.d)-cmdLen(LineToCmd)] = CloseCmd
+		p.d[len(p.d)-3] = end.X
+		p.d[len(p.d)-2] = end.Y
+		p.d[len(p.d)-1] = CloseCmd
 		return
 	} else if p.d[len(p.d)-1] == LineToCmd {
 		// replace LineTo by Close if equidirectional extension
@@ -949,11 +954,10 @@ func (p *Path) ContainsPoint(x, y float64, fillRule FillRule) bool {
 	return fillRule.Fills(n)
 }
 
-// CCW returns true when the path is counter clockwise oriented at its bottom-right-most
-// coordinate. It is most useful when knowing that the path does not self-intersect as it will
-// tell you if the entire path is CCW or not. It will only return the result for the first subpath.
-// It will return true for an empty path or a straight line. It may not return a valid value when
-// the right-most point happens to be a (self-)overlapping segment.
+// CCW returns true when the path is counter clockwise oriented at its right-most coordinate
+// (bottom-most of all right-most coordinates). It is most useful when knowing that the path does
+// not self-intersect as it will tell you if the entire path is CCW or not. It will only return the
+// result for the first subpath. It will return true for an empty path or a straight line.
 func (p *Path) CCW() bool {
 	if len(p.d) <= 4 || (p.d[4] == LineToCmd || p.d[4] == CloseCmd) && len(p.d) <= 4+cmdLen(p.d[4]) {
 		// empty path or single straight segment
@@ -1259,7 +1263,7 @@ func (p *Path) Length() float64 {
 	return d
 }
 
-// Transform transforms the path by the given transformation matrix and returns a new path. It modifies the path in-place.
+// Transform transforms the path by the given transformation matrix. It modifies the path in-place.
 func (p *Path) Transform(m Matrix) *Path {
 	_, _, _, xscale, yscale, _ := m.Decompose()
 	for i := 0; i < len(p.d); {
@@ -1336,18 +1340,100 @@ func (p *Path) Transform(m Matrix) *Path {
 	return p
 }
 
-// Translate translates the path by (x,y) and returns a new path.
+// Translate translates the path by (x,y). It modifies the path in-place.
 func (p *Path) Translate(x, y float64) *Path {
 	return p.Transform(Identity.Translate(x, y))
 }
 
-// Scale scales the path by (x,y) and returns a new path.
-func (p *Path) Scale(x, y float64) *Path {
-	return p.Transform(Identity.Scale(x, y))
+// Scale scales the path by (sx,sy). It modifies the path in-place.
+func (p *Path) Scale(sx, sy float64) *Path {
+	return p.Transform(Identity.Scale(sx, sy))
 }
 
-// Flat returns true if the path consists of solely line segments, that is only MoveTo, LineTo and Close commands.
-func (p *Path) Flat() bool {
+// Rotate rotates the path by deg degrees. It modifies the path in-place.
+func (p *Path) Rotate(deg float64) *Path {
+	return p.Transform(Identity.Rotate(deg))
+}
+
+// TransformFunc transforms the path by the given function: (x,y)=>(x,y). It modifies the path in-place.
+func (p *Path) TransformFunc(f func(float64, float64) (float64, float64)) *Path {
+	for i := 0; i < len(p.d); {
+		cmd := p.d[i]
+		switch cmd {
+		case MoveToCmd, LineToCmd, CloseCmd:
+			x, y := f(p.d[i+1], p.d[i+2])
+			p.d[i+1] = x
+			p.d[i+2] = y
+		case QuadToCmd:
+			cpx, cpy := f(p.d[i+1], p.d[i+2])
+			x, y := f(p.d[i+3], p.d[i+4])
+			p.d[i+1] = cpx
+			p.d[i+2] = cpy
+			p.d[i+3] = x
+			p.d[i+4] = y
+		case CubeToCmd:
+			cp1x, cp1y := f(p.d[i+1], p.d[i+2])
+			cp2x, cp2y := f(p.d[i+3], p.d[i+4])
+			x, y := f(p.d[i+5], p.d[i+6])
+			p.d[i+1] = cp1x
+			p.d[i+2] = cp1y
+			p.d[i+3] = cp2x
+			p.d[i+4] = cp2y
+			p.d[i+5] = x
+			p.d[i+6] = y
+		case ArcToCmd:
+			panic("not implemented") // TODO: implement transform func for arcs
+			//rx := p.d[i+1]
+			//ry := p.d[i+2]
+			//phi := p.d[i+3]
+			//large, sweep := toArcFlags(p.d[i+4])
+			//end := Point{p.d[i+5], p.d[i+6]}
+
+			//// For ellipses written as the conic section equation in matrix form, we have:
+			//// [x, y] E [x; y] = 0, with E = [1/rx^2, 0; 0, 1/ry^2]
+			//// For our transformed ellipse we have [x', y'] = T [x, y], with T the affine
+			//// transformation matrix so that
+			//// (T^-1 [x'; y'])^T E (T^-1 [x'; y'] = 0  =>  [x', y'] T^(-T) E T^(-1) [x'; y'] = 0
+			//// We define Q = T^(-1,T) E T^(-1) the new ellipse equation which is typically rotated
+			//// from the x-axis. That's why we find the eigenvalues and eigenvectors (the new
+			//// direction and length of the major and minor axes).
+			//T := m.Rotate(phi * 180.0 / math.Pi)
+			//invT := T.Inv()
+			//Q := Identity.Scale(1.0/rx/rx, 1.0/ry/ry)
+			//Q = invT.T().Mul(Q).Mul(invT)
+
+			//lambda1, lambda2, v1, v2 := Q.Eigen()
+			//rx = 1 / math.Sqrt(lambda1)
+			//ry = 1 / math.Sqrt(lambda2)
+			//phi = v1.Angle()
+			//if rx < ry {
+			//	rx, ry = ry, rx
+			//	phi = v2.Angle()
+			//}
+			//phi = angleNorm(phi)
+			//if math.Pi <= phi { // phi is canonical within 0 <= phi < 180
+			//	phi -= math.Pi
+			//}
+
+			//if xscale*yscale < 0.0 { // flip x or y axis needs flipping of the sweep
+			//	sweep = !sweep
+			//}
+			//end = f(end)
+
+			//p.d[i+1] = rx
+			//p.d[i+2] = ry
+			//p.d[i+3] = phi
+			//p.d[i+4] = fromArcFlags(large, sweep)
+			//p.d[i+5] = end.X
+			//p.d[i+6] = end.Y
+		}
+		i += cmdLen(cmd)
+	}
+	return p
+}
+
+// IsFlat returns true if the path consists of solely line segments, that is only MoveTo, LineTo and Close commands.
+func (p *Path) IsFlat() bool {
 	for i := 0; i < len(p.d); {
 		cmd := p.d[i]
 		if cmd != MoveToCmd && cmd != LineToCmd && cmd != CloseCmd {
@@ -1825,7 +1911,7 @@ func (p *Path) Dash(offset float64, d ...float64) *Path {
 
 // Reverse returns a new path that is the same path as p but in the reverse direction.
 func (p *Path) Reverse() *Path {
-	if len(p.d) == 0 {
+	if p.Empty() {
 		return p
 	}
 
@@ -2207,32 +2293,52 @@ func (p *Path) ToSVG() string {
 		return ""
 	}
 
+	var last byte
 	sb := strings.Builder{}
+	appendField := func(f string, a ...any) {
+		s := fmt.Sprintf(f, a...)
+		if last != 0 && '0' <= last && last <= '9' && '0' <= s[0] && s[0] <= '9' {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(s)
+		last = s[len(s)-1]
+	}
+
 	var x, y float64
 	for i := 0; i < len(p.d); {
 		cmd := p.d[i]
 		switch cmd {
 		case MoveToCmd:
 			x, y = p.d[i+1], p.d[i+2]
-			fmt.Fprintf(&sb, "M%v %v", num(x), num(y))
+			appendField("M%v", num(x))
+			appendField("%v", num(y))
 		case LineToCmd:
 			xStart, yStart := x, y
 			x, y = p.d[i+1], p.d[i+2]
 			if Equal(x, xStart) && Equal(y, yStart) {
 				// nothing
 			} else if Equal(x, xStart) {
-				fmt.Fprintf(&sb, "V%v", num(y))
+				appendField("V%v", num(y))
 			} else if Equal(y, yStart) {
-				fmt.Fprintf(&sb, "H%v", num(x))
+				appendField("H%v", num(x))
 			} else {
-				fmt.Fprintf(&sb, "L%v %v", num(x), num(y))
+				appendField("L%v", num(x))
+				appendField("%v", num(y))
 			}
 		case QuadToCmd:
 			x, y = p.d[i+3], p.d[i+4]
-			fmt.Fprintf(&sb, "Q%v %v %v %v", num(p.d[i+1]), num(p.d[i+2]), num(x), num(y))
+			appendField("Q%v", num(p.d[i+1]))
+			appendField("%v", num(p.d[i+2]))
+			appendField("%v", num(x))
+			appendField("%v", num(y))
 		case CubeToCmd:
 			x, y = p.d[i+5], p.d[i+6]
-			fmt.Fprintf(&sb, "C%v %v %v %v %v %v", num(p.d[i+1]), num(p.d[i+2]), num(p.d[i+3]), num(p.d[i+4]), num(x), num(y))
+			appendField("C%v", num(p.d[i+1]))
+			appendField("%v", num(p.d[i+2]))
+			appendField("%v", num(p.d[i+3]))
+			appendField("%v", num(p.d[i+4]))
+			appendField("%v", num(x))
+			appendField("%v", num(y))
 		case ArcToCmd:
 			rx, ry := p.d[i+1], p.d[i+2]
 			rot := p.d[i+3] * 180.0 / math.Pi
@@ -2250,10 +2356,14 @@ func (p *Path) ToSVG() string {
 				rx, ry = ry, rx
 				rot -= 90.0
 			}
-			fmt.Fprintf(&sb, "A%v %v %v %s %s %v %v", num(rx), num(ry), num(rot), sLarge, sSweep, num(p.d[i+5]), num(p.d[i+6]))
+			appendField("A%v", num(rx))
+			appendField("%v", num(ry))
+			appendField("%v", num(rot))
+			appendField(" %s%s%v", sLarge, sSweep, num(p.d[i+5]))
+			appendField("%v", num(p.d[i+6]))
 		case CloseCmd:
 			x, y = p.d[i+1], p.d[i+2]
-			fmt.Fprintf(&sb, "z")
+			appendField("z")
 		}
 		i += cmdLen(cmd)
 	}

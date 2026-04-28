@@ -10,6 +10,8 @@ import (
 	"github.com/Seanld/canvas"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/math/f64"
+
+	"github.com/tdewolff/canvas"
 )
 
 // TODO: add ASM optimized version for NRGBA images, since those are much faster to write as PNG
@@ -77,7 +79,6 @@ func (r *Rasterizer) Size() (float64, float64) {
 
 // RenderPath renders a path to the canvas using a style and a transformation matrix.
 func (r *Rasterizer) RenderPath(path *canvas.Path, style canvas.Style, m canvas.Matrix) {
-	// TODO: use fill rule (EvenOdd, NonZero) for rasterizer
 	bounds := canvas.Rect{}
 	var fill, stroke *canvas.Path
 	if style.HasFill() {
@@ -100,6 +101,8 @@ func (r *Rasterizer) RenderPath(path *canvas.Path, style canvas.Style, m canvas.
 		}
 	}
 
+	r.scanner.SetWinding(style.FillRule == canvas.NonZero)
+
 	size := r.Bounds().Size()
 	if style.HasFill() {
 		if style.Fill.IsPattern() {
@@ -107,16 +110,18 @@ func (r *Rasterizer) RenderPath(path *canvas.Path, style canvas.Style, m canvas.
 				style.Fill = hatch.Fill
 				fill = hatch.Tile(fill)
 			} else {
-				pattern := style.Fill.Pattern.SetColorSpace(r.colorSpace)
+				pattern := style.Fill.Pattern.Transform(m).SetColorSpace(r.colorSpace)
 				pattern.RenderTo(r, fill)
 			}
 		}
 		if style.Fill.IsGradient() {
+			mInv := m.Inv()
 			gradient := style.Fill.Gradient.SetColorSpace(r.colorSpace)
 			r.scanner.Clear()
 			r.scanner.SetColor(rasterx.ColorFunc(func(x, y int) color.Color {
-				// TODO: convert to dst color model
-				return gradient.At(float64(x), float64(y))
+				p := canvas.Point{(float64(x) + 0.5) / float64(r.resolution), (float64(size.Y-y) - 0.5) / float64(r.resolution)}
+				p = mInv.Dot(p)
+				return gradient.At(p.X, p.Y)
 			}))
 			fill.ToScanxScanner(r.scanner, float64(size.Y), r.resolution)
 			r.scanner.Draw()
@@ -134,16 +139,18 @@ func (r *Rasterizer) RenderPath(path *canvas.Path, style canvas.Style, m canvas.
 				style.Stroke = hatch.Fill
 				stroke = hatch.Tile(stroke)
 			} else {
-				pattern := style.Stroke.Pattern.SetColorSpace(r.colorSpace)
+				pattern := style.Stroke.Pattern.Transform(m).SetColorSpace(r.colorSpace)
 				pattern.RenderTo(r, stroke)
 			}
 		}
 		if style.Stroke.IsGradient() {
+			mInv := m.Inv()
 			gradient := style.Stroke.Gradient.SetColorSpace(r.colorSpace)
 			r.scanner.Clear()
 			r.scanner.SetColor(rasterx.ColorFunc(func(x, y int) color.Color {
-				// TODO: convert to dst color model
-				return gradient.At(float64(x), float64(y))
+				p := canvas.Point{(float64(x) + 0.5) / float64(r.resolution), (float64(size.Y-y) - 0.5) / float64(r.resolution)}
+				p = mInv.Dot(p)
+				return gradient.At(p.X, p.Y)
 			}))
 			stroke.ToScanxScanner(r.scanner, float64(size.Y), r.resolution)
 			r.scanner.Draw()

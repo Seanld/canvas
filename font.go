@@ -272,7 +272,7 @@ var nonameFonts = 0
 
 // LoadFont loads a font from memory.
 func LoadFont(b []byte, index int, style FontStyle) (*Font, error) {
-	SFNT, err := font.ParseFont(b, index)
+	SFNT, err := font.ParseSFNT(b, index)
 	if err != nil {
 		return nil, err
 	}
@@ -765,7 +765,12 @@ func (face *FontFace) toPath(glyphs []text.Glyph, ppem uint16) (*Path, float64, 
 			// TrueType is CW oriented for filling contours.
 			d = -d
 		}
+
+		// use FastStroke to omit settling the path
+		origFastStroke := FastStroke
+		FastStroke = true
 		p = p.Offset(d, Tolerance)
+		FastStroke = origFastStroke
 	}
 	if face.FauxItalic != 0.0 {
 		p = p.Transform(Identity.Shear(face.FauxItalic, 0.0))
@@ -981,7 +986,7 @@ func (wavyUnderline) Decorate(face *FontFace, w float64) *Path {
 
 	dx := 0.707 * r
 	w -= 2.0 * dx
-	dh := -face.Size * 0.15
+	dh := -face.Size * 0.10
 	d := 5.0 * r
 	n := int(0.5 + w/d)
 	if n == 0 {
@@ -1033,7 +1038,7 @@ func (sineUnderline) Decorate(face *FontFace, w float64) *Path {
 	d = (w - r) / float64(n)
 
 	dx := r
-	dh := -face.Size * 0.15
+	dh := -face.Size * 0.10
 	y += 0.5 * dh
 	p := &Path{}
 	p.MoveTo(dx, y)

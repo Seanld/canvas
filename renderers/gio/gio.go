@@ -112,12 +112,12 @@ func (r *Gio) renderPath(path *canvas.Path, fill canvas.Paint) {
 	if fill.IsColor() {
 		paint.Fill(r.ops, toNRGBA(fill.Color))
 	} else if fill.IsGradient() {
-		if g, ok := fill.Gradient.(*canvas.LinearGradient); ok && len(g.Stops) == 2 {
+		if g, ok := fill.Gradient.(*canvas.LinearGradient); ok && len(g.Grad) == 2 {
 			linearGradient := paint.LinearGradientOp{}
 			linearGradient.Stop1 = r.point(g.Start)
 			linearGradient.Stop2 = r.point(g.End)
-			linearGradient.Color1 = toNRGBA(g.Stops[0].Color)
-			linearGradient.Color2 = toNRGBA(g.Stops[1].Color)
+			linearGradient.Color1 = toNRGBA(g.Grad[0].Color)
+			linearGradient.Color2 = toNRGBA(g.Grad[1].Color)
 			linearGradient.Add(r.ops)
 			paint.PaintOp{}.Add(r.ops)
 		}
