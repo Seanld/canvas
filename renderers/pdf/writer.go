@@ -740,7 +740,7 @@ func (w *pdfWriter) Close() error {
 
 	// document info
 	info := pdfDict{
-		"Producer":     "tdewolff/canvas",
+		"Producer":     "Seanld/canvas",
 		"CreationDate": time.Now().Format("D:20060102150405Z0700"),
 	}
 

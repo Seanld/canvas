@@ -5,8 +5,8 @@ import (
 	"image/color"
 	"io"
 
-	"github.com/tdewolff/canvas"
-	"github.com/tdewolff/canvas/renderers/rasterizer"
+	"github.com/Seanld/canvas"
+	"github.com/Seanld/canvas/renderers/rasterizer"
 )
 
 func init() {

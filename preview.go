@@ -25,7 +25,7 @@ func DrawPreview(ctx *Context) error {
 	if root == "" {
 		root = filepath.Join(os.Getenv("HOME"), "go")
 	}
-	root = filepath.Join(root, "src/github.com/tdewolff/canvas")
+	root = filepath.Join(root, "src/github.com/Seanld/canvas")
 
 	latin, err := loadFont("DejaVu Serif, serif", FontRegular)
 	if err != nil {
