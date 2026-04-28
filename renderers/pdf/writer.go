@@ -1209,7 +1209,7 @@ func (w *pdfPageWriter) WriteText(mode canvas.WritingMode, TJ ...interface{}) {
 				s := form.String(glyph.Text) // split ligatures into separate characters
 				for _, b := range s {
 					c, ok := charmap.Windows1252.EncodeRune(b)
-					if !ok && text.IsSpace(glyph.Text) {
+					if !ok && canvasText.IsSpace(glyph.Text) {
 						c = ' ' // convert all whitespace characters to a regular space
 					}
 					if c == '\n' {
