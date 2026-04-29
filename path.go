@@ -2359,7 +2359,7 @@ func (p *Path) ToSVG() string {
 			appendField("A%v", num(rx))
 			appendField("%v", num(ry))
 			appendField("%v", num(rot))
-			appendField(" %s%s%v", sLarge, sSweep, num(p.d[i+5]))
+			appendField(" %s %s %v", sLarge, sSweep, num(p.d[i+5]))
 			appendField("%v", num(p.d[i+6]))
 		case CloseCmd:
 			x, y = p.d[i+1], p.d[i+2]
