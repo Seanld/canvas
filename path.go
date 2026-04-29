@@ -2297,7 +2297,7 @@ func (p *Path) ToSVG() string {
 	sb := strings.Builder{}
 	appendField := func(f string, a ...any) {
 		s := fmt.Sprintf(f, a...)
-		if last != 0 && '0' <= last && last <= '9' && '0' <= s[0] && s[0] <= '9' {
+		if last != 0 && '0' <= last && last <= '9' && '0' <= s[0] && s[0] <= '9' || s[0] == '.' {
 			sb.WriteByte(' ')
 		}
 		sb.WriteString(s)
