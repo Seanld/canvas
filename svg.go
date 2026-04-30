@@ -782,7 +782,14 @@ func (svg *svgParser) parseStyle(b []byte) {
 			vals := p.Values()
 			for i := 0; i < len(vals); i++ {
 				t := vals[i]
-				if t.TokenType == css.WhitespaceToken || t.TokenType == css.DelimToken && t.Data[0] == '>' {
+				if t.TokenType == css.CommaToken {
+					// End of one selector in a comma-separated list; push it and start a new one.
+					// Needed since tdewolff/parse v2.8.x stopped emitting QualifiedRuleGrammar on commas.
+					selector = append(selector, node)
+					selectors = append(selectors, selector)
+					selector = cssSelector{}
+					node = cssSelectorNode{op: ' '}
+				} else if t.TokenType == css.WhitespaceToken || t.TokenType == css.DelimToken && t.Data[0] == '>' {
 					selector = append(selector, node)
 					node = cssSelectorNode{op: ' '}
 					if t.TokenType == css.DelimToken {
